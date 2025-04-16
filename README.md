@@ -1,0 +1,106 @@
+# SharePoint/Stream Video Downloader (Puppeteer & yt-dlp)
+
+This C# console application automates the process of downloading videos hosted on Microsoft SharePoint or Stream (specifically targeting the type used for Teams meeting recordings), particularly when you are not the meeting organizer but have viewing permissions.
+
+It uses Puppeteer Sharp to control a headless (or visible) browser to:
+1.  Navigate to the video page.
+2.  Simulate starting video playback.
+3.  Intercept network requests to find the hidden `videomanifest` URL.
+4.  Process the manifest URL according to a specific algorithm.
+5.  Pass the processed URL to `yt-dlp` to handle the actual video download.
+
+**Disclaimer:** Only use this tool to download videos you have legitimate access rights and permissions to view and download. Respect privacy and organizational policies.
+
+## Features
+
+*   Automates browser interaction to find the video manifest.
+*   Attempts to automatically click the play button to trigger manifest loading.
+*   Listens for and captures the specific `videomanifest` network request.
+*   Processes the captured URL to make it compatible with `yt-dlp`.
+*   Uses the powerful `yt-dlp` tool for reliable video downloading.
+*   Provides console feedback during the process.
+*   Configurable headless mode and `yt-dlp` path.
+
+## Prerequisites
+
+1.  **.NET SDK:** .NET 6 or later installed. ([Download .NET](https://dotnet.microsoft.com/download))
+2.  **yt-dlp:** The `yt-dlp` executable must be available.
+    *   **Option A (Recommended):** Download `yt-dlp.exe` (or the binary for your OS) from the [yt-dlp Releases page](https://github.com/yt-dlp/yt-dlp/releases) and place it in the same directory where this application's executable will run (e.g., `bin/Debug/netX.Y/`).
+    *   **Option B:** Add the directory containing `yt-dlp` to your system's `PATH` environment variable.
+    *   **Option C:** Modify the `YtDlpPath` constant in `Program.cs` to point to the full path of your `yt-dlp` executable.
+3.  **Web Browser:** Puppeteer Sharp will download a compatible version of Chromium by default on the first run. Alternatively, you can configure it to use an existing Chrome/Edge installation (see Configuration).
+4.  **Microsoft 365/SharePoint Authentication:** **Crucially, you must be logged into your relevant Microsoft account in the browser profile Puppeteer uses.** The script *does not* handle the login process itself. See the [Authentication Note](#important-notes) below.
+
+## Installation & Setup
+
+1.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/PatBQc/SharePointVideoDownloader
+    cd SharePointVideoDownloader
+    ```
+2.  **Place `yt-dlp`:** Ensure `yt-dlp.exe` (or equivalent) is accessible as described in [Prerequisites](#prerequisites).
+3.  **Build the Project:**
+    ```bash
+    dotnet build
+    ```
+    (This will restore NuGet packages, including Puppeteer Sharp).
+
+## Usage
+
+1.  **Run the Application:**
+    *   From the project directory:
+        ```bash
+        dotnet run
+        ```
+    *   Or navigate to the output directory (e.g., `bin/Debug/netX.Y/`) and run the executable directly:
+        ```bash
+        # On Windows
+        .\SharePointVideoDownloader.exe
+
+        # On Linux/macOS
+        ./SharePointVideoDownloader
+        ```
+2.  **Enter Video URL:** When prompted, paste the full URL of the SharePoint/Stream page containing the video.
+    *   Example: `https://yourtenant-my.sharepoint.com/personal/user_domain_com/_layouts/15/stream.aspx?id=%2F...`
+3.  **Enter Output Filename:** When prompted, enter the desired name for the downloaded video file (e.g., `meeting_recording.mp4`). If you omit the extension, `.mp4` will be appended. If left blank, a default filename with a timestamp will be used.
+4.  **Browser Interaction (if not headless):**
+    *   If `RunHeadless` is `false` in `Program.cs` (default for easier first-time use/debugging), a browser window will open.
+    *   **First Run / Authentication:** If you are not logged into Microsoft 365 in this browser profile, you will likely see a login page. **Log in manually within this Puppeteer-controlled browser window.** Puppeteer might reuse this session for subsequent runs if you enable `UserDataDir` in the code.
+    *   The script will attempt to find and click the play button.
+5.  **Monitoring:** The console will show progress messages: launching the browser, navigating, waiting for the manifest, processing the URL, and the output from `yt-dlp` during the download.
+6.  **Completion:** Once `yt-dlp` finishes, a success or error message will be displayed, and the video file should be present in the application's execution directory (or the location specified in the `-o` path if you modify the `yt-dlp` arguments).
+
+## Configuration (in `Program.cs`)
+
+You can adjust the behavior by modifying constants at the top of `Program.cs`:
+
+*   `YtDlpPath`: Sets the path to the `yt-dlp` executable. Defaults to `yt-dlp.exe` (expecting it in the same directory or PATH).
+*   `RunHeadless`: Set to `true` to run the browser invisibly in the background. Set to `false` (default) to see the browser window, which is useful for debugging and initial login.
+*   `possibleSelectors` (array within `Main` method): If the script fails to click the play button, the selectors used to find it might be outdated. You can inspect the video page elements (using browser DevTools - F12) and update this array with new CSS selectors for the play button or video element.
+*   `userDataDir` (commented out): You can uncomment and set a path here to make Puppeteer use a persistent browser profile directory. This can help maintain login sessions between runs but requires careful path management.
+*   `launchOptions.ExecutablePath` (commented out): Uncomment and set this to use an existing Chrome/Edge installation instead of Puppeteer downloading Chromium.
+
+## Important Notes
+
+*   **Authentication:** This script **DOES NOT** automate the Microsoft login process. You **must** be logged in already. The easiest way is often to run with `RunHeadless = false` the first time and log in manually in the window that Puppeteer opens.
+*   **Legality & Permissions:** Ensure you have the necessary permissions to view and download the videos you target with this script. Adhere to your organization's policies regarding data handling and downloads.
+*   **UI Changes:** Microsoft frequently updates the web interface for SharePoint and Stream. If the script stops working (e.g., cannot find the play button or the manifest URL pattern changes), the selectors or the manifest URL processing logic in `Program.cs` may need updating.
+*   **Error Handling:** The script includes basic error handling, but complex scenarios or unexpected page states might cause failures. Check the console output for error messages from both the C# application and `yt-dlp`.
+*   **`yt-dlp` Updates:** Keep your `yt-dlp` executable updated, as streaming sites often change their methods, and `yt-dlp` is frequently updated to keep pace. (`yt-dlp -U` in your command line).
+
+## Troubleshooting
+
+*   **`yt-dlp` not found:** Verify the `YtDlpPath` in `Program.cs` is correct, or that `yt-dlp` is in the application's directory or your system PATH.
+*   **Manifest URL not found / Timeout:**
+    *   Are you logged into the correct Microsoft account in the browser profile used by Puppeteer? Try running with `RunHeadless = false` and log in manually.
+    *   Did the video page load correctly? Is the provided URL correct?
+    *   Did the script successfully click "Play"? If not, check the `possibleSelectors` in the code.
+    *   Microsoft might have changed the URL structure for `videomanifest`. Check the Network tab in your browser's DevTools (F12) manually to see if the URL pattern still matches `videomanifest?provider`.
+*   **Login screen appears repeatedly:** You might need to configure a persistent `UserDataDir` in the Puppeteer `LaunchOptions` within `Program.cs` to maintain the login session across runs.
+*   **`yt-dlp` errors:** Check the `[yt-dlp ERR]` messages in the console. The issue might be with `yt-dlp` itself, the processed URL, or network connectivity. Try running the `yt-dlp` command manually with the shortened URL printed by the script to isolate the problem.
+
+## License
+
+(Choose a license, e.g., MIT)
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
