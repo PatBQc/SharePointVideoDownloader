@@ -101,6 +101,9 @@ You can adjust the behavior by modifying constants at the top of `Program.cs`:
 
 ## License
 
-(Choose a license, e.g., MIT)
-
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+
+## TODO
+
+[ ] Take the Sharepoint URL from the CLI and have the same signature as yt-dlp (url -o filename)
