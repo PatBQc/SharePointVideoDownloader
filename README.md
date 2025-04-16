@@ -106,5 +106,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## TODO
 
-[ ] Take the Sharepoint URL from the CLI and have the same signature as yt-dlp (url -o filename)
-[] Make sure that if I login once, then I am logged the next time around.
+- [ ] Take the Sharepoint URL from the CLI and have the same signature as yt-dlp (url -o filename)
+- [ ] Make sure that if I login once, then I am logged the next time around.
