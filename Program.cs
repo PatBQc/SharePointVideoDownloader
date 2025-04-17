@@ -15,7 +15,7 @@ class Program
     // Set to false to see the browser window (useful for debugging/initial login)
     const bool RunHeadless = false; 
     // Optional: Specify a user data directory to persist sessions/logins
-    // string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PuppeteerSession");
+    static string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PuppeteerSession");
     // --- End Configuration ---
 
     static async Task Main(string[] args)
@@ -64,7 +64,7 @@ class Program
             {
                 Headless = RunHeadless,
                 Args = new[] { "--no-sandbox" }, // Often needed on Linux/Docker
-                // UserDataDir = userDataDir // Uncomment to use a persistent session
+                UserDataDir = userDataDir // Uncomment to use a persistent session
                 // ExecutablePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe" // Example: Use existing Chrome
             };
 
