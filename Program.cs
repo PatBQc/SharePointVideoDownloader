@@ -34,21 +34,55 @@ class Program
             return;
         }
 
-        // 2. Get Desired Output Filename
-        Console.Write("Enter the desired output filename (e.g., my_video.mp4): ");
+        // 2. Get Download Type
+        bool audioOnly = false;
+        Console.Write("Download video or audio only? (Enter V for Video, A for Audio - default V): ");
+        string downloadTypeInput = Console.ReadLine()?.Trim().ToUpperInvariant();
+        if (downloadTypeInput == "A")
+        {
+            audioOnly = true;
+            Console.WriteLine("Audio download selected.");
+        }
+        else
+        {
+            Console.WriteLine("Video download selected (default).");
+        }
+
+        // 3. Get Desired Output Filename
+        string defaultExtension = audioOnly ? ".mp3" : ".mp4";
+        string fileTypeDescription = audioOnly ? "audio" : "video";
+        Console.Write($"Enter the desired output filename (e.g., my_{fileTypeDescription}{defaultExtension}): ");
         string outputFilename = Console.ReadLine();
         if (string.IsNullOrWhiteSpace(outputFilename))
         {
             // Create a default filename if none provided
-            outputFilename = $"downloaded_video_{DateTime.Now:yyyyMMddHHmmss}.mp4";
+            outputFilename = $"downloaded_{fileTypeDescription}_{DateTime.Now:yyyyMMddHHmmss}{defaultExtension}";
             Console.WriteLine($"No filename provided. Using default: {outputFilename}");
         }
-        // Ensure it ends with a common video extension (yt-dlp often handles this, but good practice)
-        if (!outputFilename.Contains('.'))
+        else
         {
-            outputFilename += ".mp4"; // Default to mp4 if no extension
+            string currentExtension = Path.GetExtension(outputFilename);
+            if (string.IsNullOrEmpty(currentExtension))
+            {
+                outputFilename += defaultExtension;
+                Console.WriteLine($"No extension provided. Appending default: {outputFilename}");
+            }
+            else if (audioOnly && !currentExtension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Warning: Provided extension '{currentExtension}' for an audio download. yt-dlp will save as MP3.");
+                Console.ResetColor();
+                // yt-dlp will handle the format, but we might adjust the name for clarity if desired,
+                // or let yt-dlp's --audio-format mp3 handle the final extension.
+                // For now, we'll let yt-dlp manage the final extension based on its parameters.
+            }
+            else if (!audioOnly && !currentExtension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) && !currentExtension.Equals(".mkv", StringComparison.OrdinalIgnoreCase) && !currentExtension.Equals(".webm", StringComparison.OrdinalIgnoreCase) /* add other common video extensions if needed */)
+            {
+                 // It's a video download, but not a typical video extension.
+                 // yt-dlp might still work or convert. For now, we'll allow it.
+                 // Could add a warning if desired.
+            }
         }
-
 
         string manifestUrl = null;
         var manifestFoundTcs = new TaskCompletionSource<string>(); // To signal when manifest is found
@@ -58,7 +92,7 @@ class Program
 
         try
         {
-            // 3. Launch Puppeteer
+            // 4. Launch Puppeteer
             Console.WriteLine("Launching browser...");
             var launchOptions = new LaunchOptions
             {
@@ -77,7 +111,7 @@ class Program
             page = await browser.NewPageAsync();
             await page.SetViewportAsync(new ViewPortOptions { Width = 1280, Height = 800 });
 
-            // 4. Setup Network Interception (Listen for Responses)
+            // 5. Setup Network Interception (Listen for Responses)
             Console.WriteLine("Setting up network listener...");
             page.Response += async (sender, e) =>
             {
@@ -90,7 +124,7 @@ class Program
                 }
             };
 
-            // 5. Navigate to the Page
+            // 6. Navigate to the Page
             Console.WriteLine($"Navigating to: {targetUrl}");
             try
             {
@@ -111,7 +145,7 @@ class Program
 
             Console.WriteLine("Page loaded. Looking for video player and attempting to play...");
 
-            // 6. Wait for Video Element and Click Play
+            // 7. Wait for Video Element and Click Play
             try
             {
                 // Try common selectors for video players or play buttons
@@ -170,7 +204,7 @@ class Program
             }
 
 
-            // 7. Wait for the Manifest URL
+            // 8. Wait for the Manifest URL
             Console.WriteLine("Waiting for videomanifest URL (up to 60 seconds)...");
             try
             {
@@ -201,7 +235,7 @@ class Program
                 return;
             }
 
-            // 8. Process the Manifest URL
+            // 9. Process the Manifest URL
             Console.WriteLine("Processing manifest URL...");
             string searchTerm = "index&format=dash";
             int index = manifestUrl.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase);
@@ -220,9 +254,9 @@ class Program
             Console.WriteLine($"Shortened URL: {shortenedUrl.Substring(0, Math.Min(shortenedUrl.Length, 100))}..."); // Show beginning
 
 
-            // 9. Execute yt-dlp
-            Console.WriteLine($"Starting yt-dlp to download video as '{outputFilename}'...");
-            await RunYtDlp(shortenedUrl, outputFilename);
+            // 10. Execute yt-dlp
+            Console.WriteLine($"Starting yt-dlp to download {(audioOnly ? "audio" : "video")} as '{outputFilename}'...");
+            await RunYtDlp(shortenedUrl, outputFilename, audioOnly);
 
         }
         catch (Exception ex)
@@ -234,7 +268,7 @@ class Program
         }
         finally
         {
-            // 10. Cleanup
+            // 11. Cleanup
             if (page != null)
             {
                 // Optional: You might want to keep the page open briefly if headless is false
@@ -250,14 +284,27 @@ class Program
         }
     }
 
-    static async Task RunYtDlp(string videoUrl, string outputFilename)
+    static async Task RunYtDlp(string videoUrl, string outputFilename, bool audioOnly)
     {
-        // Ensure filename is quoted in case it contains spaces
-        // Ensure URL is quoted as it's very long and contains special characters
-        string arguments = $"\"{videoUrl}\" -o \"{outputFilename}\"";
+        string effectiveOutputFilename = outputFilename;
+        string arguments;
+
+        if (audioOnly)
+        {
+            // Ensure the filename for yt-dlp has an .mp3 extension for audio
+            effectiveOutputFilename = Path.ChangeExtension(outputFilename, ".mp3");
+            arguments = $"\"{videoUrl}\" -x --extract-audio --audio-format mp3 --audio-quality 0 -o \"{effectiveOutputFilename}\"";
+            Console.WriteLine($"Requesting audio extraction to: {effectiveOutputFilename}");
+        }
+        else
+        {
+            // Ensure filename is quoted in case it contains spaces
+            // Ensure URL is quoted as it's very long and contains special characters
+            arguments = $"\"{videoUrl}\" -o \"{outputFilename}\"";
+        }
 
         // Add --verbose for more detailed yt-dlp output during debugging
-        // arguments += " --verbose"; 
+        // arguments += " --verbose";
 
         var processStartInfo = new ProcessStartInfo
         {
@@ -299,7 +346,7 @@ class Program
                 if (process.ExitCode == 0)
                 {
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"yt-dlp finished successfully. Video saved as '{outputFilename}'");
+                    Console.WriteLine($"yt-dlp finished successfully. {(audioOnly ? "Audio" : "Video")} saved as '{effectiveOutputFilename}'");
                     Console.ResetColor();
                 }
                 else
