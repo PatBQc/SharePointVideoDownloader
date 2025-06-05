@@ -18,46 +18,177 @@ class Program
     static string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PuppeteerSession");
     // --- End Configuration ---
 
+    static void ShowHelp()
+    {
+        Console.WriteLine("SharePoint/Stream Video Downloader Usage:");
+        Console.WriteLine("-----------------------------------------");
+        Console.WriteLine("Interactive mode (no arguments):");
+        Console.WriteLine("  The program will prompt you for URL, download type, and output filename.");
+        Console.WriteLine();
+        Console.WriteLine("Command-line arguments:");
+        Console.WriteLine("  -u, --url <URL>         : (Required) The SharePoint/Stream video page URL.");
+        Console.WriteLine("                            Important: enclose the URL within \"double quotes\"");
+        Console.WriteLine("                            if it contains special characters like & or =");
+        Console.WriteLine();
+        Console.WriteLine("  -a, --audio             : (Optional) Download audio only (MP3). Defaults to video (MP4).");
+        Console.WriteLine();
+        Console.WriteLine("  -o, --output <FILENAME> : (Optional) Desired output filename (e.g., my_video.mp4 or my_audio.mp3).");
+        Console.WriteLine("                            If not provided, a default name will be generated.");
+        Console.WriteLine();
+        Console.WriteLine("  -h, --help, -?, /?      : Display this help message.");
+        Console.WriteLine();
+        Console.WriteLine("Examples:");
+        Console.WriteLine("  SharePointVideoDownloader.exe -u \"https://your-sharepoint-site.com/video/123\" -o \"meeting_recording.mp4\"");
+        Console.WriteLine("  SharePointVideoDownloader.exe --url \"https://your-stream-link.com/vid/abc\" --audio --output \"podcast_episode.mp3\"");
+        Console.WriteLine("  SharePointVideoDownloader.exe -u \"https://url.com/video\" (will prompt for output filename if not specified and use default for audio/video)");
+    }
+
     static async Task Main(string[] args)
     {
-        Console.WriteLine("SharePoint/Stream Video Downloader using Puppeteer Sharp and yt-dlp");
-        Console.WriteLine("-----------------------------------------------------------------");
+        if (args.Length > 0)
+        {
+            if (args.Contains("-h") || args.Contains("--help") || args.Contains("-?") || args.Contains("/?"))
+            {
+                ShowHelp();
+                return;
+            }
+        }
 
-        // 1. Get Target URL from User
-        Console.Write("Enter the SharePoint/Stream video page URL: ");
-        string targetUrl = Console.ReadLine();
+        Console.WriteLine();
+        Console.WriteLine("-------------------------------------------------------------------");
+        Console.WriteLine("SharePoint/Stream Video Downloader using Puppeteer Sharp and yt-dlp");
+        Console.WriteLine("-------------------------------------------------------------------");
+        Console.WriteLine();
+
+        string targetUrl = null;
+        bool audioOnly = false;
+        string outputFilename = null;
+        bool useArgs = false;
+        bool argsValid = true;
+
+        if (args.Length > 0)
+        {
+            useArgs = true; // Assume we'll try to use args if any are present (and not help)
+            for (int i = 0; i < args.Length; i++)
+            {
+                switch (args[i].ToLowerInvariant())
+                {
+                    case "-u":
+                    case "--url":
+                        if (i + 1 < args.Length)
+                        {
+                            targetUrl = args[++i];
+                        }
+                        else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Error: Missing value for -u/--url argument.");
+                            Console.ResetColor();
+                            argsValid = false;
+                        }
+                        break;
+                    case "-a":
+                    case "--audio":
+                        audioOnly = true;
+                        break;
+                    case "-o":
+                    case "--output":
+                        if (i + 1 < args.Length)
+                        {
+                            outputFilename = args[++i];
+                        }
+                        else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Error: Missing value for -o/--output argument.");
+                            Console.ResetColor();
+                            argsValid = false;
+                        }
+                        break;
+                    default:
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"Error: Unknown argument '{args[i]}'");
+                        Console.ResetColor();
+                        argsValid = false;
+                        break;
+                }
+                if (!argsValid) break;
+            }
+
+            if (argsValid && string.IsNullOrWhiteSpace(targetUrl))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Error: Target URL (-u or --url) is required when using command-line arguments.");
+                Console.ResetColor();
+                argsValid = false;
+            }
+
+            if (!argsValid)
+            {
+                ShowHelp();
+                Console.WriteLine("\nFalling back to interactive mode due to invalid or incomplete arguments...");
+                useArgs = false; // Force interactive mode
+            }
+            else
+            {
+                Console.WriteLine("Using command-line arguments:");
+                Console.WriteLine($"  URL: {targetUrl}");
+                Console.WriteLine($"  Audio Only: {audioOnly}");
+                if (!string.IsNullOrWhiteSpace(outputFilename))
+                {
+                    Console.WriteLine($"  Output Filename: {outputFilename}");
+                }
+            }
+        }
+
+        if (!useArgs || !argsValid) // If no args, or args were invalid, prompt user
+        {
+            // 1. Get Target URL from User
+            Console.Write("Enter the SharePoint/Stream video page URL: ");
+            targetUrl = Console.ReadLine();
+            
+            // 2. Get Download Type
+            Console.Write("Download video or audio only? (Enter V for Video, A for Audio - default V): ");
+            string downloadTypeInput = Console.ReadLine()?.Trim().ToUpperInvariant();
+            if (downloadTypeInput == "A")
+            {
+                audioOnly = true;
+            }
+            // audioOnly defaults to false, so no 'else' needed to set it to false.
+
+            // 3. Get Desired Output Filename
+            Console.Write($"Enter the desired output filename (e.g., my_{(audioOnly ? "audio" : "video")}.{(audioOnly ? "mp3" : "mp4")}): ");
+            outputFilename = Console.ReadLine();
+        }
+
+        // Validate URL (whether from args or input)
         if (string.IsNullOrWhiteSpace(targetUrl) || !Uri.TryCreate(targetUrl, UriKind.Absolute, out _))
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("Invalid URL provided.");
+            Console.WriteLine("Invalid or missing URL provided.");
             Console.ResetColor();
+            if (useArgs && argsValid) ShowHelp(); // Show help if args were attempted but URL was bad/missing
             return;
         }
-
-        // 2. Get Download Type
-        bool audioOnly = false;
-        Console.Write("Download video or audio only? (Enter V for Video, A for Audio - default V): ");
-        string downloadTypeInput = Console.ReadLine()?.Trim().ToUpperInvariant();
-        if (downloadTypeInput == "A")
+        
+        // Process audioOnly confirmation (whether from args or input)
+        if (audioOnly)
         {
-            audioOnly = true;
-            Console.WriteLine("Audio download selected.");
+             if (!useArgs || !argsValid) Console.WriteLine("Audio download selected."); // Only print if interactive
         }
         else
         {
-            Console.WriteLine("Video download selected (default).");
+             if (!useArgs || !argsValid) Console.WriteLine("Video download selected (default)."); // Only print if interactive
         }
 
-        // 3. Get Desired Output Filename
+        // Process and validate outputFilename (whether from args or input)
         string defaultExtension = audioOnly ? ".mp3" : ".mp4";
         string fileTypeDescription = audioOnly ? "audio" : "video";
-        Console.Write($"Enter the desired output filename (e.g., my_{fileTypeDescription}{defaultExtension}): ");
-        string outputFilename = Console.ReadLine();
+
         if (string.IsNullOrWhiteSpace(outputFilename))
         {
-            // Create a default filename if none provided
             outputFilename = $"downloaded_{fileTypeDescription}_{DateTime.Now:yyyyMMddHHmmss}{defaultExtension}";
-            Console.WriteLine($"No filename provided. Using default: {outputFilename}");
+            Console.WriteLine($"No output filename provided. Using default: {outputFilename}");
         }
         else
         {
@@ -65,22 +196,24 @@ class Program
             if (string.IsNullOrEmpty(currentExtension))
             {
                 outputFilename += defaultExtension;
-                Console.WriteLine($"No extension provided. Appending default: {outputFilename}");
+                Console.WriteLine($"No extension provided for '{Path.GetFileNameWithoutExtension(outputFilename)}'. Appending default: {outputFilename}");
             }
             else if (audioOnly && !currentExtension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"Warning: Provided extension '{currentExtension}' for an audio download. yt-dlp will save as MP3.");
+                Console.WriteLine($"Warning: Provided extension '{currentExtension}' for an audio download. yt-dlp will attempt to save as MP3.");
                 Console.ResetColor();
-                // yt-dlp will handle the format, but we might adjust the name for clarity if desired,
-                // or let yt-dlp's --audio-format mp3 handle the final extension.
-                // For now, we'll let yt-dlp manage the final extension based on its parameters.
+                // yt-dlp will handle the format. We could change outputFilename here to .mp3 if we want to be strict.
+                // outputFilename = Path.ChangeExtension(outputFilename, ".mp3");
             }
-            else if (!audioOnly && !currentExtension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) && !currentExtension.Equals(".mkv", StringComparison.OrdinalIgnoreCase) && !currentExtension.Equals(".webm", StringComparison.OrdinalIgnoreCase) /* add other common video extensions if needed */)
+            else if (!audioOnly && !currentExtension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) && 
+                                   !currentExtension.Equals(".mkv", StringComparison.OrdinalIgnoreCase) && 
+                                   !currentExtension.Equals(".webm", StringComparison.OrdinalIgnoreCase) &&
+                                   !currentExtension.Equals(".mov", StringComparison.OrdinalIgnoreCase) ) // Added .mov as common
             {
-                 // It's a video download, but not a typical video extension.
-                 // yt-dlp might still work or convert. For now, we'll allow it.
-                 // Could add a warning if desired.
+                 Console.ForegroundColor = ConsoleColor.Yellow;
+                 Console.WriteLine($"Warning: Provided extension '{currentExtension}' is not a typical video extension (.mp4, .mkv, .webm, .mov). yt-dlp will attempt to download in the best available video format.");
+                 Console.ResetColor();
             }
         }
 
