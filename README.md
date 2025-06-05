@@ -20,10 +20,13 @@ It uses Puppeteer Sharp to control a headless (or visible) browser to:
 *   Uses the powerful `yt-dlp` tool for reliable video downloading.
 *   Provides console feedback during the process.
 *   Configurable headless mode and `yt-dlp` path.
+*   **Command-line interface:** Supports passing URL, output filename, and audio-only preference via arguments.
+*   **Audio-only downloads:** Option to download only the audio track as an MP3 file.
 
 ## Prerequisites
 
 1.  **.NET SDK:** .NET 6 or later installed. ([Download .NET](https://dotnet.microsoft.com/download))
+    *   Note: If you plan to use a pre-compiled "Self-Contained" release, you do not need to install the .NET SDK or Runtime. If you use a "DotNet" or "DotNet-Dependencies" release, you will need the .NET Desktop Runtime (version 6 or later).
 2.  **yt-dlp:** The `yt-dlp` executable must be available.
     *   **Option A (Recommended):** Download `yt-dlp.exe` (or the binary for your OS) from the [yt-dlp Releases page](https://github.com/yt-dlp/yt-dlp/releases) and place it in the same directory where this application's executable will run (e.g., `bin/Debug/netX.Y/`).
     *   **Option B:** Add the directory containing `yt-dlp` to your system's `PATH` environment variable.
@@ -45,9 +48,48 @@ It uses Puppeteer Sharp to control a headless (or visible) browser to:
     ```
     (This will restore NuGet packages, including Puppeteer Sharp).
 
+## Downloading Pre-compiled Releases
+
+For users who prefer not to build the project from source, pre-compiled versions are available for download from the [Releases page](https://github.com/PatBQc/SharePointVideoDownloader/releases).
+
+Here's a brief explanation of the different versions available (replace `vXX.XX` with the actual latest version number):
+
+*   **`SharePointVideoDownloader-vXX.XX-DotNet.zip`**:
+    *   **This is likely the simplest option for most users on Windows.**
+    *   It requires the **.NET Desktop Runtime (version 6 or later) to be installed**, similar to the `DotNet-Dependencies` version.
+    *   This version is typically a "framework-dependent deployment" which is smaller and relies on a globally installed .NET runtime.
+
+*   **`SharePointVideoDownloader-vXX.XX-ARM64-Self-Contained.zip`**:
+    *   This version is for computers with **ARM64 processors** (e.g., some newer Windows laptops, Apple Silicon Macs running Windows via Parallels).
+    *   It is "self-contained," meaning it includes the .NET runtime and all necessary dependencies. You do **not** need to have .NET installed separately.
+    *   The file size will be larger due to the included runtime.
+
+*   **`SharePointVideoDownloader-vXX.XX-DotNet-Dependencies.zip`**:
+    *   This version requires you to have the **.NET Desktop Runtime (version 6 or later) already installed** on your system. You can download it from [Microsoft's .NET download page](https://dotnet.microsoft.com/download/dotnet/6.0) (look for the "Desktop Runtime" installer for your OS).
+    *   It only contains the application files and its direct dependencies, not the .NET runtime itself.
+    *   The file size is smaller than self-contained versions.
+
+*   **`SharePointVideoDownloader-vXX.XX-x64-Self-Contained.zip`**:
+    *   This version is for computers with standard **64-bit Intel/AMD processors (x64 architecture)**, which is the most common type for modern Windows PCs.
+    *   It is "self-contained," including the .NET runtime and all dependencies. No separate .NET installation is needed.
+    *   Larger file size.
+
+*   **`SharePointVideoDownloader-vXX.XX-x86-Self-Contained.zip`**:
+    *   This version is for older computers with **32-bit Intel/AMD processors (x86 architecture)**.
+    *   It is "self-contained," including the .NET runtime and all dependencies. No separate .NET installation is needed.
+    *   Larger file size.
+
+**Recommendation:** If you have the .NET 6 (or newer) Desktop Runtime installed, the `SharePointVideoDownloader-vXX.XX-DotNet.zip` version is generally the easiest to use and has a smaller download size. If you are unsure or prefer not to install .NET separately, choose the "Self-Contained" version appropriate for your computer's architecture (most likely `x64-Self-Contained` for modern PCs).
+
+After downloading, extract the ZIP file to a folder of your choice and run `SharePointVideoDownloader.exe`. Ensure `yt-dlp.exe` is also present in the same folder or accessible via your system's PATH (see [Prerequisites](#prerequisites) for `yt-dlp`).
+
 ## Usage
 
-1.  **Run the Application:**
+The application can be run in two modes: interactive (default) or via command-line arguments.
+
+**1. Interactive Mode (No Arguments):**
+
+*   Run the application without any command-line arguments:
     *   From the project directory:
         ```bash
         dotnet run
@@ -60,10 +102,57 @@ It uses Puppeteer Sharp to control a headless (or visible) browser to:
         # On Linux/macOS
         ./SharePointVideoDownloader
         ```
-2.  **Enter Video URL:** When prompted, paste the full URL of the SharePoint/Stream page containing the video.
+*   **Enter Video URL:** When prompted, paste the full URL of the SharePoint/Stream page containing the video.
     *   Example: `https://yourtenant-my.sharepoint.com/personal/user_domain_com/_layouts/15/stream.aspx?id=%2F...`
-3.  **Enter Output Filename:** When prompted, enter the desired name for the downloaded video file (e.g., `meeting_recording.mp4`). If you omit the extension, `.mp4` will be appended. If left blank, a default filename with a timestamp will be used.
-4.  **Browser Interaction (if not headless):**
+*   **Select Download Type:** Choose whether to download the full video (default) or audio only.
+*   **Enter Output Filename:** When prompted, enter the desired name for the downloaded file (e.g., `meeting_recording.mp4` or `podcast_audio.mp3`).
+    *   If you omit the extension, `.mp4` (for video) or `.mp3` (for audio) will be appended.
+    *   If left blank, a default filename with a timestamp will be used.
+
+**2. Command-Line Mode:**
+
+You can provide arguments to specify the URL, output filename, and whether to download audio only. This is useful for scripting or direct execution.
+
+*   **Syntax:**
+    ```
+    SharePointVideoDownloader.exe [options]
+    ```
+    or
+    ```
+    dotnet run -- [options]
+    ```
+
+*   **Available Options:**
+    *   `-u, --url <URL>`: **(Required)** The SharePoint/Stream video page URL.
+        *   **Important:** Enclose the URL in "double quotes" if it contains special characters like `&` or `=`.
+    *   `-a, --audio`: (Optional) Download audio only (MP3). Defaults to video (MP4) if not specified.
+    *   `-o, --output <FILENAME>`: (Optional) Desired output filename (e.g., `my_video.mp4` or `my_audio.mp3`).
+        *   If not provided, a default name will be generated.
+        *   The correct extension (`.mp4` or `.mp3`) will be enforced or appended if missing.
+    *   `-h, --help, -?, /?`: Display the help message with all options.
+
+*   **Examples:**
+    *   Download a video with a specific output name:
+        ```bash
+        # Using the executable
+        .\SharePointVideoDownloader.exe -u "https://your-sharepoint.com/video/123" -o "project_update.mp4"
+        # Using dotnet run (note the -- before arguments)
+        dotnet run -- -u "https://your-sharepoint.com/video/123" -o "project_update.mp4"
+        ```
+    *   Download audio only with a specific output name:
+        ```bash
+        .\SharePointVideoDownloader.exe --url "https://your-stream-link.com/vid/abc" --audio --output "interview_audio.mp3"
+        ```
+    *   Download a video using the default output name:
+        ```bash
+        .\SharePointVideoDownloader.exe -u "https://url.com/another_video"
+        ```
+    *   Display help:
+        ```bash
+        .\SharePointVideoDownloader.exe --help
+        ```
+
+**3. Browser Interaction (if not headless):**
     *   If `RunHeadless` is `false` in `Program.cs` (default for easier first-time use/debugging), a browser window will open.
     *   **First Run / Authentication:** If you are not logged into Microsoft 365 in this browser profile, you will likely see a login page. **Log in manually within this Puppeteer-controlled browser window.** Puppeteer might reuse this session for subsequent runs if you enable `UserDataDir` in the code.
     *   The script will attempt to find and click the play button.
@@ -106,5 +195,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## TODO
 
-- [ ] Take the Sharepoint URL from the CLI and have the same signature as yt-dlp (url -o filename)
-- [ ] Make sure that if I login once, then I am logged the next time around.
+- [x] Take the Sharepoint URL from the CLI and have the same signature as yt-dlp (url -o filename) - *Implemented with `-u/--url`, `-o/--output`, and `-a/--audio` flags.*
+- [x] Make sure that if I login once, then I am logged the next time around. - *Partially addressed by `userDataDir` option in `Program.cs` for persistent sessions.*
