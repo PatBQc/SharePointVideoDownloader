@@ -8,12 +8,12 @@ class Program
 {
     // --- Configuration ---
     // OPTION 1: Place yt-dlp.exe next to your app's .exe or ensure it's in PATH
-    const string YtDlpPath = "yt-dlp.exe"; 
+    const string YtDlpPath = "yt-dlp.exe";
     // OPTION 2: Provide the full path if yt-dlp is elsewhere
     // const string YtDlpPath = @"C:\path\to\your\yt-dlp.exe"; 
 
     // Set to false to see the browser window (useful for debugging/initial login)
-    const bool RunHeadless = false; 
+    const bool RunHeadless = false;
     // Optional: Specify a user data directory to persist sessions/logins
     static string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PuppeteerSession");
     // --- End Configuration ---
@@ -44,10 +44,10 @@ class Program
             Console.WriteLine($"No filename provided. Using default: {outputFilename}");
         }
         // Ensure it ends with a common video extension (yt-dlp often handles this, but good practice)
-         if (!outputFilename.Contains('.'))
-         {
-             outputFilename += ".mp4"; // Default to mp4 if no extension
-         }
+        if (!outputFilename.Contains('.'))
+        {
+            outputFilename += ".mp4"; // Default to mp4 if no extension
+        }
 
 
         string manifestUrl = null;
@@ -71,7 +71,7 @@ class Program
             // Download browser if needed
             var browserFetcher = new BrowserFetcher();
             Console.WriteLine("Ensuring browser is available...");
-            await browserFetcher.DownloadAsync(); 
+            await browserFetcher.DownloadAsync();
 
             browser = await Puppeteer.LaunchAsync(launchOptions);
             page = await browser.NewPageAsync();
@@ -86,7 +86,7 @@ class Program
                 {
                     Console.WriteLine($"Potential manifest found: {e.Response.Url}");
                     // Attempt to set the result. TrySetResult prevents exceptions if already set.
-                    manifestFoundTcs.TrySetResult(e.Response.Url); 
+                    manifestFoundTcs.TrySetResult(e.Response.Url);
                 }
             };
 
@@ -100,12 +100,12 @@ class Program
             {
                 Console.WriteLine("Warning: Page navigation timed out (NetworkIdle2). Continuing, but page might not be fully loaded.");
             }
-             catch (Exception navEx)
+            catch (Exception navEx)
             {
-                 Console.ForegroundColor = ConsoleColor.Red;
-                 Console.WriteLine($"Error navigating to page: {navEx.Message}");
-                 Console.ResetColor();
-                 return; // Exit if navigation fails critically
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error navigating to page: {navEx.Message}");
+                Console.ResetColor();
+                return; // Exit if navigation fails critically
             }
 
 
@@ -132,11 +132,14 @@ class Program
                     try
                     {
                         playElement = await page.WaitForSelectorAsync(selector, new WaitForSelectorOptions { Timeout = 20000 }); // Wait 20s for element
-                        if (playElement != null) {
+                        if (playElement != null)
+                        {
                             Console.WriteLine($"Found player/button with selector: {selector}");
                             break; // Found one, exit loop
                         }
-                    } catch (WaitTaskTimeoutException) {
+                    }
+                    catch (WaitTaskTimeoutException)
+                    {
                         Console.WriteLine($"Selector '{selector}' not found or timed out.");
                     }
                 }
@@ -172,18 +175,18 @@ class Program
             try
             {
                 // Wait for the TaskCompletionSource to be set by the Response event handler OR timeout
-                var completedTask = await Task.WhenAny(manifestFoundTcs.Task, Task.Delay(60000)); 
+                var completedTask = await Task.WhenAny(manifestFoundTcs.Task, Task.Delay(60000));
 
                 if (completedTask == manifestFoundTcs.Task)
                 {
                     manifestUrl = await manifestFoundTcs.Task; // Get the result
-                     Console.ForegroundColor = ConsoleColor.Green;
+                    Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"Successfully captured manifest URL: {manifestUrl.Substring(0, Math.Min(manifestUrl.Length, 100))}..."); // Show beginning
                     Console.ResetColor();
                 }
                 else
                 {
-                     Console.ForegroundColor = ConsoleColor.Red;
+                    Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine("Error: Timed out waiting for the videomanifest URL.");
                     Console.WriteLine("Possible reasons: Video didn't play, page structure changed, login required, or manifest URL pattern differs.");
                     Console.ResetColor();
@@ -208,7 +211,7 @@ class Program
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Error: Could not find '{searchTerm}' in the captured manifest URL.");
                 Console.WriteLine($"Full URL was: {manifestUrl}");
-                 Console.ResetColor();
+                Console.ResetColor();
                 return;
             }
 
@@ -227,15 +230,15 @@ class Program
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"An unexpected error occurred: {ex.Message}");
             Console.WriteLine(ex.StackTrace);
-             Console.ResetColor();
+            Console.ResetColor();
         }
         finally
         {
             // 10. Cleanup
             if (page != null)
             {
-                 // Optional: You might want to keep the page open briefly if headless is false
-                 // if (!RunHeadless) await Task.Delay(5000); 
+                // Optional: You might want to keep the page open briefly if headless is false
+                // if (!RunHeadless) await Task.Delay(5000); 
                 await page.CloseAsync();
             }
             if (browser != null)
@@ -243,7 +246,7 @@ class Program
                 Console.WriteLine("Closing browser...");
                 await browser.CloseAsync();
             }
-             Console.WriteLine("Process finished.");
+            Console.WriteLine("Process finished.");
         }
     }
 
@@ -251,7 +254,7 @@ class Program
     {
         // Ensure filename is quoted in case it contains spaces
         // Ensure URL is quoted as it's very long and contains special characters
-         string arguments = $"\"{videoUrl}\" -o \"{outputFilename}\"";
+        string arguments = $"\"{videoUrl}\" -o \"{outputFilename}\"";
 
         // Add --verbose for more detailed yt-dlp output during debugging
         // arguments += " --verbose"; 
@@ -271,15 +274,18 @@ class Program
         using (var process = new Process { StartInfo = processStartInfo })
         {
             // Capture standard output and error streams
-            process.OutputDataReceived += (sender, e) => {
+            process.OutputDataReceived += (sender, e) =>
+            {
                 if (e.Data != null) Console.WriteLine($"[yt-dlp] {e.Data}");
             };
-            process.ErrorDataReceived += (sender, e) => {
-                 if (e.Data != null) {
+            process.ErrorDataReceived += (sender, e) =>
+            {
+                if (e.Data != null)
+                {
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine($"[yt-dlp ERR] {e.Data}");
                     Console.ResetColor();
-                 }
+                }
             };
 
             try
@@ -294,11 +300,11 @@ class Program
                 {
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"yt-dlp finished successfully. Video saved as '{outputFilename}'");
-                     Console.ResetColor();
+                    Console.ResetColor();
                 }
                 else
                 {
-                     Console.ForegroundColor = ConsoleColor.Red;
+                    Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine($"yt-dlp exited with error code: {process.ExitCode}");
                     Console.WriteLine("Check the [yt-dlp ERR] messages above for details.");
                     Console.ResetColor();
@@ -306,12 +312,13 @@ class Program
             }
             catch (Exception ex)
             {
-                 Console.ForegroundColor = ConsoleColor.Red;
+                Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Failed to run yt-dlp: {ex.Message}");
-                if (ex is System.ComponentModel.Win32Exception win32Ex && win32Ex.NativeErrorCode == 2) {
-                     Console.WriteLine($"'{YtDlpPath}' not found. Make sure yt-dlp is installed and its path is correct in the script or system PATH.");
+                if (ex is System.ComponentModel.Win32Exception win32Ex && win32Ex.NativeErrorCode == 2)
+                {
+                    Console.WriteLine($"'{YtDlpPath}' not found. Make sure yt-dlp is installed and its path is correct in the script or system PATH.");
                 }
-                 Console.ResetColor();
+                Console.ResetColor();
             }
         }
     }
