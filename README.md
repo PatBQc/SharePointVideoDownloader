@@ -153,11 +153,15 @@ You can provide arguments to specify the URL, output filename, and whether to do
         ```
 
 **3. Browser Interaction (if not headless):**
-    *   If `RunHeadless` is `false` in `Program.cs` (default for easier first-time use/debugging), a browser window will open.
-    *   **First Run / Authentication:** If you are not logged into Microsoft 365 in this browser profile, you will likely see a login page. **Log in manually within this Puppeteer-controlled browser window.** Puppeteer might reuse this session for subsequent runs if you enable `UserDataDir` in the code.
-    *   The script will attempt to find and click the play button.
-5.  **Monitoring:** The console will show progress messages: launching the browser, navigating, waiting for the manifest, processing the URL, and the output from `yt-dlp` during the download.
-6.  **Completion:** Once `yt-dlp` finishes, a success or error message will be displayed, and the video file should be present in the application's execution directory (or the location specified in the `-o` path if you modify the `yt-dlp` arguments).
+*   If `RunHeadless` is `false` in `Program.cs` (default for easier first-time use/debugging), a browser window will open.
+*   **First Run / Authentication:** If you are not logged into Microsoft 365 in this browser profile, you will likely see a login page. **Log in manually within this Puppeteer-controlled browser window.** Puppeteer might reuse this session for subsequent runs if you enable `UserDataDir` in the code.
+*   The script will attempt to find and click the play button.
+    
+**4.  Monitoring:** 
+The console will show progress messages: launching the browser, navigating, waiting for the manifest, processing the URL, and the output from `yt-dlp` during the download.
+
+**5.  Completion:** 
+Once `yt-dlp` finishes, a success or error message will be displayed, and the video file should be present in the application's execution directory (or the location specified in the `-o` path if you modify the `yt-dlp` arguments).
 
 ## Configuration (in `Program.cs`)
 
