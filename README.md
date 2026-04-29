@@ -2,12 +2,10 @@
 
 This C# console application automates the process of downloading videos hosted on Microsoft SharePoint or Stream (specifically targeting the type used for Teams meeting recordings), particularly when you are not the meeting organizer but have viewing permissions.
 
-It uses Puppeteer Sharp to control a headless (or visible) browser to:
-1.  Navigate to the video page.
-2.  Simulate starting video playback.
-3.  Intercept network requests to find the hidden `videomanifest` URL.
-4.  Process the manifest URL according to a specific algorithm.
-5.  Pass the processed URL to `yt-dlp` to handle the actual video download.
+It uses Puppeteer Sharp to control a headless (or visible) browser. Two strategies are used, in this order:
+
+1.  **Direct file download (primary).** The application parses the `id` query parameter from the `stream.aspx` URL, derives the underlying SharePoint file path, and asks Chromium to download the original mp4 from `https://<host>/<path>?download=1`. This works because the user is already authenticated in the browser and has read access to the file (otherwise they could not be playing it). The original mp4 is non-DRM and is what you would get from clicking the SharePoint "Download" button.
+2.  **Manifest interception + yt-dlp (legacy fallback).** If the URL has no `id` parameter or the direct download fails, the application falls back to the older flow: simulate playback, capture the `videomanifest` URL, process it, replay the browser request headers (including the SharePoint `X-SPOPacToken`) and cookies, and hand the URL off to `yt-dlp`. Note that since Microsoft now serves DRM-protected DASH manifests for many Stream / Teams recordings, this fallback often fails with `ERROR: This video is DRM protected` — the primary path is what works for that content.
 
 **Disclaimer:** Only use this tool to download videos you have legitimate access rights and permissions to view and download. Respect privacy and organizational policies.
 
@@ -190,9 +188,10 @@ You can adjust the behavior by modifying constants at the top of `Program.cs`:
     *   Did the script successfully click "Play"? If not, check the `possibleSelectors` in the code.
     *   Microsoft might have changed the URL structure for `videomanifest`. Check the Network tab in your browser's DevTools (F12) manually to see if the URL pattern still matches `videomanifest?provider`.
 *   **Login screen appears repeatedly:** You might need to configure a persistent `UserDataDir` in the Puppeteer `LaunchOptions` within `Program.cs` to maintain the login session across runs.
-*   **`yt-dlp` errors:** Check the `[yt-dlp ERR]` messages in the console. The issue might be with `yt-dlp` itself, the processed URL, or network connectivity.
-    *   **HTTP 401 Unauthorized from `yt-dlp`:** Microsoft's media CDN (`*.svc.ms`) requires the SharePoint browser session in addition to the signed manifest URL. The application now exports the Puppeteer browser cookies to a temporary Netscape `cookies.txt` file and passes it to `yt-dlp` via `--cookies`, alongside the browser User-Agent (`--user-agent`) and the SharePoint origin as `--referer`. The cookies file is deleted automatically after the download. If you still hit 401, make sure you are actually signed in inside the Puppeteer-controlled browser window (run with `RunHeadless = false` once and complete the Microsoft login).
-    *   To reproduce a `yt-dlp` failure manually, you must mirror those flags — running `yt-dlp` with only the printed shortened URL will fail with 401 because no session is attached.
+*   **The direct download path didn't fire and `yt-dlp` says `This video is DRM protected`:** Microsoft now serves DRM-protected DASH streams for many Teams meeting recordings, which `yt-dlp` cannot decrypt. The application's primary path avoids that by downloading the original mp4 directly via SharePoint's `?download=1` endpoint. If you saw the legacy fallback fire instead, your URL probably did not have the `id=…` query parameter expected by `stream.aspx`. Make sure you are giving the tool the URL you copied from SharePoint's address bar with `Copy Link → View only / Copy direct link`, which always contains `id=`.
+*   **`yt-dlp` errors (legacy fallback only):** Check the `[yt-dlp ERR]` messages in the console.
+    *   **HTTP 401 Unauthorized from `yt-dlp`:** The legacy fallback replays the browser's request headers for the manifest fetch (including the SharePoint `X-SPOPacToken`) and the full cookie jar. If you still hit 401, make sure you are actually signed in inside the Puppeteer-controlled browser window (run with `RunHeadless = false` once and complete the Microsoft login).
+    *   To reproduce a `yt-dlp` failure manually you would need to mirror the captured headers and cookies — simply running `yt-dlp` against the printed shortened URL will not work.
 
 ## License
 

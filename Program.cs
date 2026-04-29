@@ -256,30 +256,42 @@ class Program
             page.Response += async (sender, e) =>
             {
                 // Check if the URL contains the specific videomanifest marker
-                if (e.Response.Url.Contains("videomanifest?provider", StringComparison.OrdinalIgnoreCase))
+                if (!e.Response.Url.Contains("videomanifest?provider", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.WriteLine($"Potential manifest found: {e.Response.Url}");
-
-                    // Capture the headers the browser actually sent for this request.
-                    // The browser's request succeeds; if we replay these exact headers
-                    // from yt-dlp the *.svc.ms CDN should accept it too.
-                    if (capturedManifestHeaders == null)
-                    {
-                        try
-                        {
-                            var reqHeaders = e.Response?.Request?.Headers;
-                            if (reqHeaders != null)
-                            {
-                                capturedManifestHeaders = new System.Collections.Generic.Dictionary<string, string>(
-                                    reqHeaders, StringComparer.OrdinalIgnoreCase);
-                            }
-                        }
-                        catch { /* best effort */ }
-                    }
-
-                    // Attempt to set the result. TrySetResult prevents exceptions if already set.
-                    manifestFoundTcs.TrySetResult(e.Response.Url);
+                    return;
                 }
+
+                // The browser sends a CORS preflight (OPTIONS) before the real GET.
+                // The preflight's request headers carry only Access-Control-Request-*
+                // metadata — NOT the SharePoint POP auth token (x-spopactoken) that
+                // the real GET adds. We need to skip the preflight and capture the
+                // actual fetch.
+                System.Net.Http.HttpMethod? method = null;
+                try { method = e.Response?.Request?.Method; } catch { /* best effort */ }
+                bool isPreflight = method != null && method.Equals(System.Net.Http.HttpMethod.Options);
+
+                Console.WriteLine($"Potential manifest {(isPreflight ? "preflight (OPTIONS)" : "fetch")} found: {e.Response.Url}");
+
+                if (isPreflight)
+                {
+                    // Don't resolve the TCS yet — wait for the real GET so headers are
+                    // populated by the time downstream code reads capturedManifestHeaders.
+                    return;
+                }
+
+                try
+                {
+                    var reqHeaders = e.Response?.Request?.Headers;
+                    if (reqHeaders != null)
+                    {
+                        capturedManifestHeaders = new System.Collections.Generic.Dictionary<string, string>(
+                            reqHeaders, StringComparer.OrdinalIgnoreCase);
+                    }
+                }
+                catch { /* best effort */ }
+
+                // Attempt to set the result. TrySetResult prevents exceptions if already set.
+                manifestFoundTcs.TrySetResult(e.Response.Url);
             };
 
             // 6. Navigate to the Page
@@ -301,9 +313,37 @@ class Program
             }
 
 
-            Console.WriteLine("Page loaded. Looking for video player and attempting to play...");
+            Console.WriteLine("Page loaded.");
 
-            // 7. Wait for Video Element and Click Play
+            // 7. Try direct file download from SharePoint first.
+            // Microsoft now serves DRM-protected DASH streams to the web player on
+            // *.svc.ms, which yt-dlp cannot decrypt (no CDM). The original mp4 is
+            // still available via SharePoint's standard "?download=1" endpoint as
+            // long as the user has read access — which they obviously do, since
+            // they can play the video in the browser.
+            try
+            {
+                bool directOk = await TryDirectDownloadAsync(page, targetUrl, outputFilename);
+                if (directOk)
+                {
+                    return; // Done — skip the manifest/yt-dlp fallback entirely.
+                }
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Direct download did not complete; falling back to manifest + yt-dlp...");
+                Console.ResetColor();
+            }
+            catch (Exception ddEx)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Direct download attempt threw: {ddEx.Message}");
+                Console.WriteLine("Falling back to manifest + yt-dlp...");
+                Console.ResetColor();
+            }
+
+            Console.WriteLine("Looking for video player and attempting to play...");
+
+            // 8. Wait for Video Element and Click Play (legacy path — only used when
+            // direct download was not possible)
             try
             {
                 // Try common selectors for video players or play buttons
@@ -509,6 +549,8 @@ class Program
                 "if-modified-since", "if-none-match",
                 // POST body type — irrelevant for our GETs
                 "content-type",
+                // CORS preflight metadata — not part of the real fetch.
+                "access-control-request-method", "access-control-request-headers",
             };
 
             var forwarded = new System.Collections.Generic.List<string>();
@@ -624,6 +666,176 @@ class Program
                 Console.ResetColor();
             }
         }
+    }
+
+    // Extract a query-string parameter value (URL-encoded) by name. Returns null
+    // if the query is empty or the name is not present.
+    static string? ParseQueryParam(string query, string name)
+    {
+        if (string.IsNullOrEmpty(query)) return null;
+        if (query.StartsWith("?")) query = query.Substring(1);
+        foreach (var pair in query.Split('&'))
+        {
+            int eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            string key = pair.Substring(0, eq);
+            if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return pair.Substring(eq + 1);
+            }
+        }
+        return null;
+    }
+
+    // Re-encode a SharePoint document path (e.g. "/personal/u/Documents/My File.mp4")
+    // into a URL path (each segment escaped via Uri.EscapeDataString). Preserves
+    // leading and internal slashes.
+    static string EncodePath(string decodedPath)
+    {
+        if (string.IsNullOrEmpty(decodedPath)) return decodedPath ?? string.Empty;
+        var segments = decodedPath.Split('/');
+        for (int i = 0; i < segments.Length; i++)
+        {
+            segments[i] = segments[i].Length == 0 ? string.Empty : Uri.EscapeDataString(segments[i]);
+        }
+        return string.Join("/", segments);
+    }
+
+    // Try to download the original mp4 directly from SharePoint by deriving the
+    // file URL from the stream.aspx?id=<path> query parameter. Returns true if
+    // the file was saved successfully, false if we should fall back to the
+    // legacy manifest/yt-dlp flow.
+    static async Task<bool> TryDirectDownloadAsync(IPage page, string pageUrl, string outputFilename)
+    {
+        Uri pageUri;
+        try { pageUri = new Uri(pageUrl); }
+        catch { return false; }
+
+        string? idParam = ParseQueryParam(pageUri.Query, "id");
+        if (string.IsNullOrEmpty(idParam))
+        {
+            Console.WriteLine("Direct download: no 'id' parameter in URL — cannot derive file path.");
+            return false;
+        }
+
+        // Querystring values use '+' for space; convert before unescaping.
+        string decodedPath = Uri.UnescapeDataString(idParam.Replace('+', ' '));
+        if (!decodedPath.StartsWith("/", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"Direct download: unexpected 'id' format (expected leading '/'): {decodedPath}");
+            return false;
+        }
+
+        string encodedPath = EncodePath(decodedPath);
+        string downloadUrl = $"{pageUri.Scheme}://{pageUri.Host}{encodedPath}?download=1";
+        Console.WriteLine($"Direct download URL: {downloadUrl}");
+
+        // Configure where Chromium should save downloads, and what filename to use.
+        string downloadDir = Path.GetDirectoryName(Path.GetFullPath(outputFilename)) ?? Directory.GetCurrentDirectory();
+        if (string.IsNullOrEmpty(downloadDir)) downloadDir = Directory.GetCurrentDirectory();
+        string targetFileName = Path.GetFileName(outputFilename);
+        string finalPath = Path.Combine(downloadDir, targetFileName);
+        string crdownloadPath = finalPath + ".crdownload";
+
+        // Clean up any stale partial / final files from previous attempts so our
+        // wait loop can detect a fresh download cleanly.
+        try { if (File.Exists(finalPath)) File.Delete(finalPath); } catch { /* ignore */ }
+        try { if (File.Exists(crdownloadPath)) File.Delete(crdownloadPath); } catch { /* ignore */ }
+
+        var cdp = await page.CreateCDPSessionAsync();
+        try
+        {
+            await cdp.SendAsync("Page.setDownloadBehavior", new
+            {
+                behavior = "allow",
+                downloadPath = downloadDir,
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Direct download: Page.setDownloadBehavior failed ({ex.Message}).");
+            return false;
+        }
+
+        // Trigger the download by injecting an <a download> click. This makes
+        // Chromium handle auth, redirects, and the Content-Disposition response.
+        string js =
+            "(function(url, name){" +
+            "  var a = document.createElement('a');" +
+            "  a.href = url; a.download = name;" +
+            "  document.body.appendChild(a); a.click();" +
+            "  setTimeout(function(){ document.body.removeChild(a); }, 100);" +
+            "})(" +
+            System.Text.Json.JsonSerializer.Serialize(downloadUrl) + "," +
+            System.Text.Json.JsonSerializer.Serialize(targetFileName) + ");";
+        try
+        {
+            await page.EvaluateExpressionAsync(js);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Direct download: failed to dispatch click ({ex.Message}).");
+            return false;
+        }
+
+        Console.WriteLine($"Saving to: {finalPath}");
+        Console.WriteLine("Waiting for download to complete (poll every 2s, max 30 min)...");
+
+        DateTime start = DateTime.UtcNow;
+        bool startedDownloading = false;
+        long lastReportedSize = -1;
+
+        while ((DateTime.UtcNow - start).TotalMinutes < 30)
+        {
+            await Task.Delay(2000);
+
+            bool inProgress = File.Exists(crdownloadPath);
+            bool done = File.Exists(finalPath);
+
+            if (inProgress)
+            {
+                startedDownloading = true;
+                long size = 0;
+                try { size = new FileInfo(crdownloadPath).Length; } catch { }
+                if (size != lastReportedSize)
+                {
+                    Console.WriteLine($"  Downloading: {size:N0} bytes...");
+                    lastReportedSize = size;
+                }
+                continue;
+            }
+
+            if (done)
+            {
+                // .crdownload disappeared and the final file exists — give the OS
+                // a beat to flush, then accept it.
+                await Task.Delay(500);
+                long size = 0;
+                try { size = new FileInfo(finalPath).Length; } catch { }
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"✓ Direct download complete: {finalPath} ({size:N0} bytes)");
+                Console.ResetColor();
+                return true;
+            }
+
+            if (startedDownloading)
+            {
+                // Was downloading, now neither file is present — Chromium may have
+                // canceled the download (e.g., navigated away, server error).
+                Console.WriteLine("Direct download: partial file disappeared — assuming cancellation.");
+                return false;
+            }
+
+            // Hasn't started yet. Give it a bounded amount of time.
+            if ((DateTime.UtcNow - start).TotalSeconds > 60)
+            {
+                Console.WriteLine("Direct download: nothing showed up in the download directory after 60 seconds.");
+                return false;
+            }
+        }
+
+        Console.WriteLine("Direct download: timed out after 30 minutes.");
+        return false;
     }
 
     // DTOs for Network.getAllCookies CDP response. The CDP cookie shape (camelCase

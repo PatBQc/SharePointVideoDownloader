@@ -4,13 +4,25 @@ Guidance for AI coding agents (Claude Code, Codex, etc.) working in this reposit
 
 ## Project at a glance
 
-`SharePointVideoDownloader` is a small Windows-focused C# console app (.NET 9) that helps a logged-in user download Microsoft SharePoint / Stream videos (typically Teams meeting recordings) by:
+`SharePointVideoDownloader` is a small Windows-focused C# console app (.NET 9) that helps a logged-in user download Microsoft SharePoint / Stream videos (typically Teams meeting recordings).
 
-1. Driving a real Chromium instance with **PuppeteerSharp**.
-2. Navigating to the video page and clicking play to trigger media loading.
-3. Listening on the network for the hidden `videomanifest?provider=...` request.
-4. Truncating that URL up to and including `index&format=dash`.
-5. Handing the trimmed URL to **`yt-dlp.exe`** as a child process to perform the actual download (or audio extraction with `-x --audio-format mp3`).
+The app drives a real Chromium instance with **PuppeteerSharp** and tries two strategies, in order:
+
+**Primary — direct file download (works on DRM-protected stream pages).**
+1. Navigate to the SharePoint `stream.aspx?id=<path>` URL.
+2. Parse the `id` query parameter to derive the underlying file path inside the user's OneDrive / SharePoint site.
+3. Use `Page.setDownloadBehavior` over CDP to redirect Chromium downloads into the desired output directory.
+4. Trigger the download by injecting an `<a download>` click pointing at `https://<host>/<path>?download=1`. Chromium handles the auth, redirects, and `Content-Disposition` natively. The file that lands is the original non-DRM mp4.
+5. Poll for `<file>.crdownload` (in-progress) and the final file to detect completion.
+
+**Fallback — manifest interception + `yt-dlp.exe` (legacy path).** Used only when the direct download cannot run (e.g., URL has no `id` parameter):
+1. Click play to trigger media loading.
+2. Listen for `videomanifest?provider=...` and capture both the URL and the *non-OPTIONS* request headers the browser actually sent (including the SharePoint `X-SPOPacToken` proof-of-possession token).
+3. Export every cookie via raw CDP `Network.getAllCookies` (the per-URL API misses cross-domain auth-flow cookies) into a temporary Netscape `cookies.txt`.
+4. Truncate the manifest URL up to and including `index&format=dash`.
+5. Hand the URL to `yt-dlp.exe` along with `--cookies <file>` and `--add-header "<name>:<value>"` for each replayed header. Authorization-style header values are redacted in the echoed command line; the cookies file is deleted in a `finally` block.
+
+Microsoft now serves DRM-protected DASH manifests for many Stream / Teams recordings, so the legacy `yt-dlp` path will often surface `ERROR: This video is DRM protected`. That is expected; the primary direct-download path is what makes the tool useful for current content.
 
 Authentication is delegated to the browser session — the app never types passwords. The first run is intended to be non-headless so the user can sign in to Microsoft 365, and the session is persisted via PuppeteerSharp's `UserDataDir` (defaults to `%LOCALAPPDATA%\PuppeteerSession`).
 
@@ -73,9 +85,12 @@ Publish all release artefacts via `_publishAll.bat` from the repo root (Windows 
 
 ## Things that commonly break (and where to look)
 
-- **Play button not found**: `possibleSelectors` array in `Program.cs` — inspect the live page in DevTools, add a new CSS selector to the front of the list.
-- **Manifest never captured (60 s timeout)**: Microsoft may have renamed the request. Search for the literal `videomanifest?provider` and the trim marker `index&format=dash`; both live in `Program.cs`.
-- **`yt-dlp` exits non-zero**: re-run yt-dlp manually with the printed shortened URL to isolate the failure. Common causes are an outdated `yt-dlp.exe`, a manifest URL that requires browser cookies/auth that yt-dlp cannot replay, or shell quoting issues when the URL contains `&` (always quote URLs on the command line).
+- **Direct download starts but never finishes**: poll loop is in `TryDirectDownloadAsync` in `Program.cs`. Watch for the `<file>.crdownload` partial file. If Chromium saved it under a different filename (Content-Disposition mismatch), update the `<a download>` JS injection to honor the server filename instead of forcing a name.
+- **No `id` parameter, fallback fired**: the user passed a URL that is not a `stream.aspx?id=…` page (e.g., a direct video URL or a custom share link). Either accept the fallback or tell the user to use the SharePoint "Copy direct link" action.
+- **Play button not found (legacy path only)**: `possibleSelectors` array in `Program.cs` — inspect the live page in DevTools, add a new CSS selector to the front of the list.
+- **Manifest never captured (legacy path only)**: Microsoft may have renamed the request. Search for the literal `videomanifest?provider` and the trim marker `index&format=dash`; both live in `Program.cs`. Remember the OPTIONS preflight is now filtered out by checking `Request.Method` so we only capture headers from the real GET.
+- **`yt-dlp` exits with `This video is DRM protected`**: that is the expected behaviour for current Microsoft Stream content and is why the primary path is the direct file download. There is no in-process workaround in the legacy yt-dlp path — yt-dlp has no CDM.
+- **`yt-dlp` exits with HTTP 401 (legacy path only)**: the captured headers may have come from the OPTIONS preflight rather than the GET (look for `Access-Control-Request-*` in the forwarded list — that is the bug). The Response handler must be checking `Request.Method != HttpMethod.Options` before capturing.
 - **Re-prompting for login**: `userDataDir` may have been wiped or is being shared across machines. The persisted Chromium profile lives at `%LOCALAPPDATA%\PuppeteerSession`.
 
 ## When making changes
