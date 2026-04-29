@@ -9,14 +9,12 @@ using PuppeteerSharp;
 class Program
 {
     // --- Configuration ---
-    // OPTION 1: Place yt-dlp.exe next to your app's .exe or ensure it's in PATH
-    const string YtDlpPath = "yt-dlp.exe";
-    // OPTION 2: Provide the full path if yt-dlp is elsewhere
-    // const string YtDlpPath = @"C:\path\to\your\yt-dlp.exe"; 
-
-    // Set to false to see the browser window (useful for debugging/initial login)
+    // Set to false to see the browser window (useful for debugging/initial login).
+    // Capture mode automatically launches non-headless and pushes the window
+    // off-screen, regardless of this flag.
     const bool RunHeadless = false;
-    // Optional: Specify a user data directory to persist sessions/logins
+    // Optional: persistent Puppeteer profile so that the user only needs to log
+    // into Microsoft 365 once.
     static string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PuppeteerSession");
     // --- End Configuration ---
 
@@ -24,6 +22,20 @@ class Program
     {
         Console.WriteLine("SharePoint/Stream Video Downloader Usage:");
         Console.WriteLine("-----------------------------------------");
+        Console.WriteLine("Two strategies are tried automatically:");
+        Console.WriteLine("  1. Direct download    - fast, returns the original mp4. Used by default.");
+        Console.WriteLine("                          Requires Download permission on the file (your own");
+        Console.WriteLine("                          recordings, or shares that grant Download).");
+        Console.WriteLine("  2. Capture (-c)       - re-records the playing video. Real-time (a 1 h meeting");
+        Console.WriteLine("                          takes 1 h). Use this for view-only / DRM-protected");
+        Console.WriteLine("                          recordings shared with you, where direct download");
+        Console.WriteLine("                          returns 403 or the stream is PlayReady-protected.");
+        Console.WriteLine();
+        Console.WriteLine("Optional dependency: ffmpeg in PATH (or alongside this exe). When present, the");
+        Console.WriteLine("capture path produces a seekable file and can transcode to .mp4, and --audio");
+        Console.WriteLine("can extract an .mp3. Without ffmpeg, you still get a .webm but it may not be");
+        Console.WriteLine("seekable in some players. The startup will print a heads-up if ffmpeg is missing.");
+        Console.WriteLine();
         Console.WriteLine("Interactive mode (no arguments):");
         Console.WriteLine("  The program will prompt you for URL, download type, and output filename.");
         Console.WriteLine();
@@ -32,26 +44,33 @@ class Program
         Console.WriteLine("                            Important: enclose the URL within \"double quotes\"");
         Console.WriteLine("                            if it contains special characters like & or =");
         Console.WriteLine();
-        Console.WriteLine("  -a, --audio             : (Optional) Download audio only (MP3). Defaults to video (MP4).");
+        Console.WriteLine("  -a, --audio             : (Optional) Produce an .mp3 instead of a video file.");
+        Console.WriteLine("                            Requires ffmpeg.");
         Console.WriteLine();
-        Console.WriteLine("  -o, --output <FILENAME> : (Optional) Desired output filename (e.g., my_video.mp4 or my_audio.mp3).");
-        Console.WriteLine("                            If not provided, a default name will be generated.");
+        Console.WriteLine("  -o, --output <FILENAME> : (Optional) Desired output filename. The container");
+        Console.WriteLine("                            extension (.mp4, .webm, .mp3) is honoured when");
+        Console.WriteLine("                            ffmpeg is available; otherwise capture mode falls");
+        Console.WriteLine("                            back to .webm.");
         Console.WriteLine();
-        Console.WriteLine("  -c, --capture           : (Optional) Force the browser-side capture path (record the");
-        Console.WriteLine("                            playing video + audio via getDisplayMedia + MediaRecorder).");
-        Console.WriteLine("                            Use this when the meeting is shared with you in view-only");
-        Console.WriteLine("                            mode (no Download permission) and is DRM-protected.");
-        Console.WriteLine("                            Output is .webm (VP9 + Opus).");
+        Console.WriteLine("  -c, --capture           : (Optional) Use the capture path instead of trying");
+        Console.WriteLine("                            direct download first. Required for view-only or");
+        Console.WriteLine("                            DRM-protected stream pages.");
         Console.WriteLine();
-        Console.WriteLine("  --capture-seconds <N>   : (Optional, capture mode only) Stop the recording after N");
-        Console.WriteLine("                            seconds even if the video has not ended. Useful for testing.");
+        Console.WriteLine("  --capture-seconds <N>   : (Optional, capture mode only) Stop the recording");
+        Console.WriteLine("                            after N seconds even if the video has not ended.");
+        Console.WriteLine("                            Useful for testing.");
         Console.WriteLine();
         Console.WriteLine("  -h, --help, -?, /?      : Display this help message.");
         Console.WriteLine();
         Console.WriteLine("Examples:");
-        Console.WriteLine("  SharePointVideoDownloader.exe -u \"https://your-sharepoint-site.com/video/123\" -o \"meeting_recording.mp4\"");
-        Console.WriteLine("  SharePointVideoDownloader.exe --url \"https://your-stream-link.com/vid/abc\" --audio --output \"podcast_episode.mp3\"");
-        Console.WriteLine("  SharePointVideoDownloader.exe -u \"https://url.com/video\" (will prompt for output filename if not specified and use default for audio/video)");
+        Console.WriteLine("  # Download a meeting you own (fast):");
+        Console.WriteLine("  SharePointVideoDownloader.exe -u \"https://your-tenant-my.sharepoint.com/.../stream.aspx?id=...\" -o \"meeting.mp4\"");
+        Console.WriteLine();
+        Console.WriteLine("  # Record a view-only meeting shared with you (real-time):");
+        Console.WriteLine("  SharePointVideoDownloader.exe -u \"...\" -o \"meeting.mp4\" --capture");
+        Console.WriteLine();
+        Console.WriteLine("  # Audio-only output (mp3):");
+        Console.WriteLine("  SharePointVideoDownloader.exe -u \"...\" -o \"meeting.mp3\" --audio");
     }
 
     static async Task Main(string[] args)
@@ -66,9 +85,9 @@ class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine("-------------------------------------------------------------------");
-        Console.WriteLine("SharePoint/Stream Video Downloader using Puppeteer Sharp and yt-dlp");
-        Console.WriteLine("-------------------------------------------------------------------");
+        Console.WriteLine("------------------------------------------------------------------------");
+        Console.WriteLine("SharePoint/Stream Video Downloader using Puppeteer Sharp + ffmpeg (soft)");
+        Console.WriteLine("------------------------------------------------------------------------");
         Console.WriteLine();
 
         string targetUrl = null;
@@ -242,18 +261,16 @@ class Program
                                    !currentExtension.Equals(".mov", StringComparison.OrdinalIgnoreCase) ) // Added .mov as common
             {
                  Console.ForegroundColor = ConsoleColor.Yellow;
-                 Console.WriteLine($"Warning: Provided extension '{currentExtension}' is not a typical video extension (.mp4, .mkv, .webm, .mov). yt-dlp will attempt to download in the best available video format.");
+                 Console.WriteLine($"Warning: Provided extension '{currentExtension}' is not a typical video extension (.mp4, .mkv, .webm, .mov).");
                  Console.ResetColor();
             }
         }
 
-        string manifestUrl = null;
-        var manifestFoundTcs = new TaskCompletionSource<string>(); // To signal when manifest is found
-        // Captured request headers from the actual successful manifest fetch in the
-        // browser. yt-dlp will replay these so its request looks identical to the
-        // browser's — the *.svc.ms CDN authenticates based on these headers (and
-        // possibly an Authorization Bearer token injected by the SharePoint JS player).
-        System.Collections.Generic.Dictionary<string, string> capturedManifestHeaders = null;
+        // Check ffmpeg availability up front so the user knows what to expect
+        // before the long-running browser work even starts. ffmpeg is a soft
+        // dependency: when present we get seekable webm + .mp4 transcode +
+        // audio extraction. When absent we leave the raw .webm in place.
+        WarnIfFfmpegMissing(audioOnly, outputFilename);
 
         IBrowser browser = null;
         IPage page = null;
@@ -304,52 +321,15 @@ class Program
 
             browser = await Puppeteer.LaunchAsync(launchOptions);
             page = await browser.NewPageAsync();
-            await page.SetViewportAsync(new ViewPortOptions { Width = 1280, Height = 800 });
-
-            // 5. Setup Network Interception (Listen for Responses)
-            Console.WriteLine("Setting up network listener...");
-            page.Response += async (sender, e) =>
+            if (!captureMode)
             {
-                // Check if the URL contains the specific videomanifest marker
-                if (!e.Response.Url.Contains("videomanifest?provider", StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
+                // Capture mode lets the OS window size drive the viewport (set
+                // via DefaultViewport=null + --window-size flag). For the other
+                // paths we keep a fixed viewport so layout is predictable.
+                await page.SetViewportAsync(new ViewPortOptions { Width = 1280, Height = 800 });
+            }
 
-                // The browser sends a CORS preflight (OPTIONS) before the real GET.
-                // The preflight's request headers carry only Access-Control-Request-*
-                // metadata — NOT the SharePoint POP auth token (x-spopactoken) that
-                // the real GET adds. We need to skip the preflight and capture the
-                // actual fetch.
-                System.Net.Http.HttpMethod? method = null;
-                try { method = e.Response?.Request?.Method; } catch { /* best effort */ }
-                bool isPreflight = method != null && method.Equals(System.Net.Http.HttpMethod.Options);
-
-                Console.WriteLine($"Potential manifest {(isPreflight ? "preflight (OPTIONS)" : "fetch")} found: {e.Response.Url}");
-
-                if (isPreflight)
-                {
-                    // Don't resolve the TCS yet — wait for the real GET so headers are
-                    // populated by the time downstream code reads capturedManifestHeaders.
-                    return;
-                }
-
-                try
-                {
-                    var reqHeaders = e.Response?.Request?.Headers;
-                    if (reqHeaders != null)
-                    {
-                        capturedManifestHeaders = new System.Collections.Generic.Dictionary<string, string>(
-                            reqHeaders, StringComparer.OrdinalIgnoreCase);
-                    }
-                }
-                catch { /* best effort */ }
-
-                // Attempt to set the result. TrySetResult prevents exceptions if already set.
-                manifestFoundTcs.TrySetResult(e.Response.Url);
-            };
-
-            // 6. Navigate to the Page
+            // 5. Navigate to the Page
             Console.WriteLine($"Navigating to: {targetUrl}");
             try
             {
@@ -377,189 +357,67 @@ class Program
             if (captureMode)
             {
                 bool capOk = await TryCaptureViaPlaybackAsync(page, outputFilename, captureMaxSeconds);
-                if (capOk) return;
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Capture path failed. See messages above.");
-                Console.ResetColor();
+                if (!capOk)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Capture path failed. See messages above.");
+                    Console.ResetColor();
+                    return;
+                }
+
+                // Honor -a/--audio: post-process the captured file (mp4 if ffmpeg
+                // transcoded it, webm otherwise) into mp3.
+                if (audioOnly)
+                {
+                    string captured = File.Exists(outputFilename)
+                        ? outputFilename
+                        : Path.Combine(
+                            Path.GetDirectoryName(Path.GetFullPath(outputFilename)) ?? Directory.GetCurrentDirectory(),
+                            Path.GetFileNameWithoutExtension(outputFilename) + ".webm");
+                    await ExtractAudioMp3Async(captured);
+                }
                 return;
             }
 
-            // 7. Try direct file download from SharePoint first.
-            // Microsoft now serves DRM-protected DASH streams to the web player on
-            // *.svc.ms, which yt-dlp cannot decrypt (no CDM). The original mp4 is
-            // still available via SharePoint's standard "?download=1" endpoint as
-            // long as the user has read access — which they obviously do, since
-            // they can play the video in the browser.
+            // 6. Default path: try the direct file download from SharePoint.
+            // Works for any recording you have Download permission on (your own
+            // recordings, or shared with you with Download enabled). Returns
+            // the original non-DRM mp4 directly.
+            bool directOk = false;
             try
             {
-                bool directOk = await TryDirectDownloadAsync(page, targetUrl, outputFilename);
-                if (directOk)
-                {
-                    return; // Done — skip the manifest/yt-dlp fallback entirely.
-                }
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine("Direct download did not complete; falling back to manifest + yt-dlp...");
-                Console.ResetColor();
+                directOk = await TryDirectDownloadAsync(page, targetUrl, outputFilename);
             }
             catch (Exception ddEx)
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"Direct download attempt threw: {ddEx.Message}");
-                Console.WriteLine("Falling back to manifest + yt-dlp...");
                 Console.ResetColor();
             }
 
-            Console.WriteLine("Looking for video player and attempting to play...");
-
-            // 8. Wait for Video Element and Click Play (legacy path — only used when
-            // direct download was not possible)
-            try
+            if (directOk)
             {
-                // Try common selectors for video players or play buttons
-                // Adjust these selectors if they don't work for your specific page structure.
-                // Inspect the element in your browser's DevTools (F12) to find the right one.
-                string[] possibleSelectors = {
-                    "video",                               // The video tag itself
-                    "[data-testid='media-play-button']",   // Common test ID
-                    "button[aria-label='Play']",           // Accessibility label
-                    ".playbutton_playpause",               // A class name seen on some players
-                    "[class*='videoPlayer--play']"         // Partial class match
-                    // Add more potential selectors here
-                };
-
-                IElementHandle playElement = null;
-                foreach (var selector in possibleSelectors)
+                // Honor -a/--audio: extract audio from the downloaded mp4.
+                if (audioOnly)
                 {
-                    try
-                    {
-                        playElement = await page.WaitForSelectorAsync(selector, new WaitForSelectorOptions { Timeout = 20000 }); // Wait 20s for element
-                        if (playElement != null)
-                        {
-                            Console.WriteLine($"Found player/button with selector: {selector}");
-                            break; // Found one, exit loop
-                        }
-                    }
-                    catch (WaitTaskTimeoutException)
-                    {
-                        Console.WriteLine($"Selector '{selector}' not found or timed out.");
-                    }
+                    await ExtractAudioMp3Async(outputFilename);
                 }
-
-
-                if (playElement != null)
-                {
-                    await Task.Delay(1000); // Small delay before clicking
-                    Console.WriteLine("Clicking play element...");
-                    await playElement.ClickAsync();
-                    await Task.Delay(2000); // Wait a bit for playback to potentially start triggering network requests
-                }
-                else
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("Warning: Could not find a recognizable play button/video element to click automatically.");
-                    Console.WriteLine("Playback might need to be started manually if the manifest isn't found.");
-                    Console.ResetColor();
-                    // We'll still wait for the manifest below, in case it loaded anyway or the user clicks play manually
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"Warning: Error trying to find or click play button: {ex.Message}");
-                Console.ResetColor();
-                // Continue trying to find the manifest
-            }
-
-
-            // 8. Wait for the Manifest URL
-            Console.WriteLine("Waiting for videomanifest URL (up to 60 seconds)...");
-            try
-            {
-                // Wait for the TaskCompletionSource to be set by the Response event handler OR timeout
-                var completedTask = await Task.WhenAny(manifestFoundTcs.Task, Task.Delay(60000));
-
-                if (completedTask == manifestFoundTcs.Task)
-                {
-                    manifestUrl = await manifestFoundTcs.Task; // Get the result
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"Successfully captured manifest URL: {manifestUrl.Substring(0, Math.Min(manifestUrl.Length, 100))}..."); // Show beginning
-                    Console.ResetColor();
-                }
-                else
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("Error: Timed out waiting for the videomanifest URL.");
-                    Console.WriteLine("Possible reasons: Video didn't play, page structure changed, login required, or manifest URL pattern differs.");
-                    Console.ResetColor();
-                    return; // Exit if timed out
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Error while waiting for manifest: {ex.Message}");
-                Console.ResetColor();
                 return;
             }
 
-            // 9. Process the Manifest URL
-            Console.WriteLine("Processing manifest URL...");
-            string searchTerm = "index&format=dash";
-            int index = manifestUrl.IndexOf(searchTerm, StringComparison.OrdinalIgnoreCase);
-
-            if (index == -1)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Error: Could not find '{searchTerm}' in the captured manifest URL.");
-                Console.WriteLine($"Full URL was: {manifestUrl}");
-                Console.ResetColor();
-                return;
-            }
-
-            // Get the substring up to and including the search term
-            string shortenedUrl = manifestUrl.Substring(0, index + searchTerm.Length);
-            Console.WriteLine($"Shortened URL: {shortenedUrl.Substring(0, Math.Min(shortenedUrl.Length, 100))}..."); // Show beginning
-
-
-            // 10. Export browser session so yt-dlp can authenticate to the media CDN.
-            // Microsoft's *.svc.ms CDN rejects requests that lack the auth context the
-            // SharePoint web player attaches. The signed query parameters embedded in
-            // the manifest URL are necessary but no longer sufficient. We therefore:
-            //   (a) export every cookie from the browser via CDP Network.getAllCookies
-            //       (the per-URL cookies API misses partitioned/cross-domain cookies);
-            //   (b) replay the exact request headers the browser sent for the manifest
-            //       (typically including Authorization, Origin, Sec-Fetch-*, X-MS-*).
-            // Both pieces are forwarded to yt-dlp.
-            string? cookiesFile = null;
-            try
-            {
-                Console.WriteLine("Exporting browser cookies (all domains, via CDP) for yt-dlp...");
-                cookiesFile = await ExportAllCookiesToNetscapeAsync(page);
-
-                if (capturedManifestHeaders == null || capturedManifestHeaders.Count == 0)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("Warning: no request headers were captured for the manifest fetch. yt-dlp will fall back to default headers, which may fail with 401.");
-                    Console.ResetColor();
-                }
-                else
-                {
-                    Console.WriteLine($"Captured {capturedManifestHeaders.Count} request header(s) from the browser's manifest fetch.");
-                }
-
-                // 11. Execute yt-dlp
-                Console.WriteLine($"Starting yt-dlp to download {(audioOnly ? "audio" : "video")} as '{outputFilename}'...");
-                await RunYtDlp(shortenedUrl, outputFilename, audioOnly, cookiesFile, capturedManifestHeaders);
-            }
-            finally
-            {
-                // The cookies file contains live session credentials — wipe it ASAP.
-                if (!string.IsNullOrEmpty(cookiesFile) && File.Exists(cookiesFile))
-                {
-                    try { File.Delete(cookiesFile); } catch { /* ignore */ }
-                }
-            }
-
+            // Direct download was not possible (no Download permission, or
+            // the link is to view-only DRM-protected content). yt-dlp + DASH
+            // manifest used to be the fallback here, but Microsoft now ships
+            // PlayReady DRM on its DASH streams and yt-dlp cannot decrypt
+            // those segments — the only legitimate way to get a file from a
+            // view-only stream is to re-record it as it plays. Tell the user
+            // to re-run with --capture.
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine();
+            Console.WriteLine("Direct download was not possible (likely a view-only share, or DRM-protected stream).");
+            Console.WriteLine("Re-run with -c / --capture to record the video as it plays in the browser.");
+            Console.WriteLine("Capture mode runs in real time (a 1-hour meeting takes 1 hour to record).");
+            Console.ResetColor();
         }
         catch (Exception ex)
         {
@@ -586,156 +444,6 @@ class Program
         }
     }
 
-    static async Task RunYtDlp(string videoUrl, string outputFilename, bool audioOnly,
-        string? cookiesFile = null,
-        System.Collections.Generic.Dictionary<string, string>? requestHeaders = null)
-    {
-        string effectiveOutputFilename = outputFilename;
-        string arguments;
-
-        // Build common auth/header flags. These are required because Microsoft's media
-        // CDN authenticates via the SharePoint browser session, not just the URL.
-        var prefix = new StringBuilder();
-        if (!string.IsNullOrEmpty(cookiesFile))
-        {
-            prefix.Append($"--cookies \"{cookiesFile}\" ");
-        }
-
-        // Replay the exact request headers the browser used for the manifest fetch.
-        // Skip headers that yt-dlp manages itself or that would corrupt our quoting.
-        if (requestHeaders != null && requestHeaders.Count > 0)
-        {
-            var deny = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                // Provided to yt-dlp via --cookies file
-                "cookie",
-                // Set automatically by HTTP stack
-                "host", "content-length", "transfer-encoding", "connection",
-                "expect", "te", "upgrade", "trailer",
-                // yt-dlp manages compression and ranges itself
-                "accept-encoding", "range",
-                // Cache validators we don't want to replay
-                "if-modified-since", "if-none-match",
-                // POST body type — irrelevant for our GETs
-                "content-type",
-                // CORS preflight metadata — not part of the real fetch.
-                "access-control-request-method", "access-control-request-headers",
-            };
-
-            var forwarded = new System.Collections.Generic.List<string>();
-            foreach (var kv in requestHeaders)
-            {
-                string name = kv.Key;
-                if (string.IsNullOrEmpty(name)) continue;
-                if (name.StartsWith(":", StringComparison.Ordinal)) continue; // HTTP/2 pseudo-headers
-                if (deny.Contains(name)) continue;
-                string value = kv.Value ?? string.Empty;
-                // Skip values containing characters that would break our shell quoting.
-                if (value.IndexOfAny(new[] { '"', '\r', '\n' }) >= 0) continue;
-
-                // yt-dlp expects KEY:VALUE for --add-header.
-                prefix.Append($"--add-header \"{name}:{value}\" ");
-                forwarded.Add(name);
-            }
-
-            if (forwarded.Count > 0)
-            {
-                Console.WriteLine($"Forwarding {forwarded.Count} header(s) to yt-dlp: {string.Join(", ", forwarded)}");
-            }
-        }
-
-        if (audioOnly)
-        {
-            // Ensure the filename for yt-dlp has an .mp3 extension for audio
-            effectiveOutputFilename = Path.ChangeExtension(outputFilename, ".mp3");
-            arguments = $"{prefix}\"{videoUrl}\" -x --extract-audio --audio-format mp3 --audio-quality 0 -o \"{effectiveOutputFilename}\"";
-            Console.WriteLine($"Requesting audio extraction to: {effectiveOutputFilename}");
-        }
-        else
-        {
-            // Ensure filename is quoted in case it contains spaces
-            // Ensure URL is quoted as it's very long and contains special characters
-            arguments = $"{prefix}\"{videoUrl}\" -o \"{outputFilename}\"";
-        }
-
-        // Add --verbose for more detailed yt-dlp output during debugging
-        // arguments += " --verbose";
-
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = YtDlpPath, // Path to yt-dlp executable
-            Arguments = arguments,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,     // Required for redirection
-            CreateNoWindow = true,       // Don't show the yt-dlp console window
-        };
-
-        // Mask sensitive bits in the echoed command line: the cookies file path
-        // points at live session credentials, and any forwarded Authorization header
-        // value is a Bearer token that grants access to the user's tenant.
-        string echoedArgs = arguments;
-        if (!string.IsNullOrEmpty(cookiesFile))
-        {
-            echoedArgs = echoedArgs.Replace(cookiesFile, "<cookies-file>");
-        }
-        echoedArgs = System.Text.RegularExpressions.Regex.Replace(
-            echoedArgs,
-            "--add-header \"(?<n>[Aa]uthorization|[Pp]roxy-[Aa]uthorization|[Xx]-[Mm]s-[Aa]uth[^:]*):[^\"]*\"",
-            "--add-header \"${n}:<redacted>\"");
-        Console.WriteLine($"Executing: {processStartInfo.FileName} {echoedArgs}");
-
-        using (var process = new Process { StartInfo = processStartInfo })
-        {
-            // Capture standard output and error streams
-            process.OutputDataReceived += (sender, e) =>
-            {
-                if (e.Data != null) Console.WriteLine($"[yt-dlp] {e.Data}");
-            };
-            process.ErrorDataReceived += (sender, e) =>
-            {
-                if (e.Data != null)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"[yt-dlp ERR] {e.Data}");
-                    Console.ResetColor();
-                }
-            };
-
-            try
-            {
-                process.Start();
-                process.BeginOutputReadLine(); // Start reading output asynchronously
-                process.BeginErrorReadLine();  // Start reading error asynchronously
-
-                await process.WaitForExitAsync(); // Wait for the process to complete
-
-                if (process.ExitCode == 0)
-                {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"yt-dlp finished successfully. {(audioOnly ? "Audio" : "Video")} saved as '{effectiveOutputFilename}'");
-                    Console.ResetColor();
-                }
-                else
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"yt-dlp exited with error code: {process.ExitCode}");
-                    Console.WriteLine("Check the [yt-dlp ERR] messages above for details.");
-                    Console.ResetColor();
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Failed to run yt-dlp: {ex.Message}");
-                if (ex is System.ComponentModel.Win32Exception win32Ex && win32Ex.NativeErrorCode == 2)
-                {
-                    Console.WriteLine($"'{YtDlpPath}' not found. Make sure yt-dlp is installed and its path is correct in the script or system PATH.");
-                }
-                Console.ResetColor();
-            }
-        }
-    }
 
     // Extract a query-string parameter value (URL-encoded) by name. Returns null
     // if the query is empty or the name is not present.
@@ -1485,6 +1193,86 @@ class Program
         }
     }
 
+    // Print a friendly heads-up if ffmpeg is missing. This runs at startup,
+    // before any browser work, so the user has a chance to install ffmpeg and
+    // re-run rather than discover the problem after a one-hour capture has
+    // already produced an unseekable webm.
+    static void WarnIfFfmpegMissing(bool audioOnlyRequested, string requestedOutput)
+    {
+        if (!string.IsNullOrEmpty(LocateFfmpeg())) return;
+
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("[!] ffmpeg was not found in PATH or alongside this executable.");
+        Console.WriteLine("    The download itself will still work, but the resulting file may have issues:");
+        Console.WriteLine("    - In capture mode, the produced .webm has no seek index and many players");
+        Console.WriteLine("      will not be able to scrub through it (VLC handles it; the Windows movie");
+        Console.WriteLine("      app and most browsers do not).");
+        string ext = string.IsNullOrEmpty(requestedOutput) ? "" : Path.GetExtension(requestedOutput);
+        if (!string.IsNullOrEmpty(ext) && !ext.Equals(".webm", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"    - You asked for a {ext} file but in capture mode we cannot transcode");
+            Console.WriteLine("      from webm to that format without ffmpeg, so the .webm will be kept as-is.");
+        }
+        if (audioOnlyRequested)
+        {
+            Console.WriteLine("    - --audio (mp3 extraction) requires ffmpeg, so the audio-only step");
+            Console.WriteLine("      will be skipped and you will get the full video file instead.");
+        }
+        Console.WriteLine();
+        Console.WriteLine("    To install ffmpeg on Windows (one-time, takes 30 s):");
+        Console.WriteLine("      winget install Gyan.FFmpeg");
+        Console.WriteLine("      or  choco install ffmpeg");
+        Console.WriteLine("      or  download from https://ffmpeg.org/download.html and unzip");
+        Console.WriteLine("    Then either add the bin folder to your PATH, or drop ffmpeg.exe into");
+        Console.WriteLine("    the same folder as this executable. The tool will pick it up automatically");
+        Console.WriteLine("    on the next run.");
+        Console.WriteLine();
+        Console.WriteLine("    Continuing without ffmpeg...");
+        Console.ResetColor();
+        Console.WriteLine();
+    }
+
+    // Extract an mp3 from any video / webm produced by the download or capture
+    // path, then delete the original. No-op (with a warning) if ffmpeg is
+    // missing — the user keeps the source file in that case.
+    static async Task ExtractAudioMp3Async(string sourcePath)
+    {
+        if (string.IsNullOrEmpty(sourcePath) || !File.Exists(sourcePath))
+        {
+            Console.WriteLine($"Audio extraction: source file '{sourcePath}' not found, skipping.");
+            return;
+        }
+
+        string ffmpeg = LocateFfmpeg();
+        if (string.IsNullOrEmpty(ffmpeg))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("Audio extraction skipped: ffmpeg is not available.");
+            Console.WriteLine($"You can run `ffmpeg -i \"{sourcePath}\" -vn -c:a libmp3lame -q:a 2 \"...\\output.mp3\"` manually after installing ffmpeg.");
+            Console.ResetColor();
+            return;
+        }
+
+        string mp3Path = Path.ChangeExtension(sourcePath, ".mp3");
+        try { if (File.Exists(mp3Path)) File.Delete(mp3Path); } catch { }
+        Console.WriteLine($"Extracting audio to {mp3Path}...");
+        bool ok = await RunFfmpegAsync(ffmpeg, $"-y -i \"{sourcePath}\" -vn -c:a libmp3lame -q:a 2 \"{mp3Path}\"");
+        if (ok && File.Exists(mp3Path) && new FileInfo(mp3Path).Length > 0)
+        {
+            try { File.Delete(sourcePath); } catch { /* leave source if delete fails */ }
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"✓ Audio extracted: {mp3Path} ({new FileInfo(mp3Path).Length:N0} bytes); source video removed.");
+            Console.ResetColor();
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("Audio extraction failed; keeping the original video file.");
+            Console.ResetColor();
+            try { if (File.Exists(mp3Path) && new FileInfo(mp3Path).Length == 0) File.Delete(mp3Path); } catch { }
+        }
+    }
+
     static string LocateFfmpeg()
     {
         // Prefer a sibling ffmpeg.exe next to our own .exe; fall back to PATH.
@@ -1548,99 +1336,4 @@ class Program
         }
     }
 
-    // DTOs for Network.getAllCookies CDP response. The CDP cookie shape (camelCase
-    // properties) maps onto these via System.Text.Json's case-insensitive matching.
-    private sealed class CdpCookie
-    {
-        public string Name { get; set; } = string.Empty;
-        public string Value { get; set; } = string.Empty;
-        public string Domain { get; set; } = string.Empty;
-        public string Path { get; set; } = "/";
-        public double Expires { get; set; } = -1;
-        public bool HttpOnly { get; set; }
-        public bool Secure { get; set; }
-        public bool Session { get; set; }
-    }
-
-    private sealed class CdpAllCookiesResponse
-    {
-        public CdpCookie[]? Cookies { get; set; }
-    }
-
-    // Export *every* cookie known to the browser into a Netscape cookies.txt file
-    // that yt-dlp can consume via --cookies. Uses the raw CDP Network.getAllCookies
-    // call rather than IPage.GetCookiesAsync(urls) because the latter filters by URL
-    // and silently drops cookies set on unrelated domains during the auth flow
-    // (login.microsoftonline.com, *.office.com, partitioned cookies, etc.).
-    static async Task<string> ExportAllCookiesToNetscapeAsync(IPage page)
-    {
-        CdpCookie[] cookies = Array.Empty<CdpCookie>();
-        try
-        {
-            var cdp = await page.CreateCDPSessionAsync();
-            var response = await cdp.SendAsync<CdpAllCookiesResponse>("Network.getAllCookies");
-            cookies = response?.Cookies ?? Array.Empty<CdpCookie>();
-        }
-        catch (Exception ex)
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"Warning: failed to read all cookies via CDP: {ex.Message}");
-            Console.ResetColor();
-        }
-
-        var sb = new StringBuilder();
-        sb.AppendLine("# Netscape HTTP Cookie File");
-        sb.AppendLine("# Generated by SharePointVideoDownloader for yt-dlp authentication.");
-        sb.AppendLine();
-
-        int written = 0;
-        var perDomain = new System.Collections.Generic.SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var c in cookies)
-        {
-            if (c == null || string.IsNullOrEmpty(c.Name) || string.IsNullOrEmpty(c.Domain))
-            {
-                continue;
-            }
-            string value = c.Value ?? string.Empty;
-            // Netscape cookies.txt is tab-separated. Skip cookies whose fields contain
-            // tab/newline characters since they'd corrupt the file.
-            if (c.Name.IndexOfAny(new[] { '\t', '\n', '\r' }) >= 0) continue;
-            if (value.IndexOfAny(new[] { '\t', '\n', '\r' }) >= 0) continue;
-
-            string domain = c.Domain;
-            // The Netscape format flag for "include subdomains" is TRUE iff the domain
-            // begins with a leading dot.
-            bool includeSubdomains = domain.StartsWith(".", StringComparison.Ordinal);
-
-            string path = string.IsNullOrEmpty(c.Path) ? "/" : c.Path;
-
-            // Session cookies (no expiry) are written as 0; otherwise use the unix ts.
-            long expires = (!c.Session && c.Expires > 0) ? (long)c.Expires : 0L;
-
-            // yt-dlp recognises the "#HttpOnly_" prefix (Mozilla extension) to
-            // preserve the HttpOnly flag on a cookie.
-            string domainLine = c.HttpOnly ? "#HttpOnly_" + domain : domain;
-
-            sb.Append(domainLine).Append('\t')
-              .Append(includeSubdomains ? "TRUE" : "FALSE").Append('\t')
-              .Append(path).Append('\t')
-              .Append(c.Secure ? "TRUE" : "FALSE").Append('\t')
-              .Append(expires).Append('\t')
-              .Append(c.Name).Append('\t')
-              .AppendLine(value);
-            written++;
-
-            string bucket = includeSubdomains ? domain.TrimStart('.') : domain;
-            perDomain[bucket] = perDomain.TryGetValue(bucket, out var n) ? n + 1 : 1;
-        }
-
-        string filePath = Path.Combine(Path.GetTempPath(), $"spvd_cookies_{Guid.NewGuid():N}.txt");
-        await File.WriteAllTextAsync(filePath, sb.ToString());
-        Console.WriteLine($"Wrote {written} cookies (across {perDomain.Count} domain(s)) to temporary file for yt-dlp.");
-        if (perDomain.Count > 0)
-        {
-            Console.WriteLine("  Cookies per domain: " + string.Join(", ", perDomain.Select(kv => $"{kv.Key}={kv.Value}")));
-        }
-        return filePath;
-    }
 }
