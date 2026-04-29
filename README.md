@@ -24,23 +24,59 @@ It drives a Chromium instance via Puppeteer Sharp and tries two strategies:
     *   add a seek index to the raw `.webm` produced by capture mode (without it the file plays in VLC but most other players cannot scrub through it);
     *   transcode `.webm` → `.mp4` when you ask for `-o foo.mp4`;
     *   extract audio to `.mp3` when you pass `--audio`.
-    Install via `winget install Gyan.FFmpeg` or `choco install ffmpeg`, or unzip a static build from <https://ffmpeg.org/download.html> and either add it to PATH or drop `ffmpeg.exe` into the same folder as `SharePointVideoDownloader.exe`. The startup will warn you if ffmpeg is missing.
+
+    Install on:
+    *   **Windows:** `winget install Gyan.FFmpeg` (recommended) or `choco install ffmpeg`, or unzip a static build from <https://ffmpeg.org/download.html> and either add it to PATH or drop `ffmpeg.exe` into the same folder as `SharePointVideoDownloader.exe`.
+    *   **macOS:** `brew install ffmpeg`.
+    *   **Linux:** `apt install ffmpeg` / `dnf install ffmpeg` / `pacman -S ffmpeg` / etc.
+
+    The startup will warn you if ffmpeg is missing and continue anyway.
 3.  **Web Browser:** Puppeteer Sharp downloads a compatible version of Chromium on the first run.
-4.  **Microsoft 365 / SharePoint Authentication:** **You must be logged into your Microsoft account in the Chromium window Puppeteer launches.** The first run is non-headless on purpose — sign in there once, and the session persists in `%LOCALAPPDATA%\PuppeteerSession` for subsequent runs.
+4.  **Microsoft 365 / SharePoint Authentication:** **You must be logged into your Microsoft account in the Chromium window Puppeteer launches.** The first run is intentionally non-headless: sign in there once and the session persists. Subsequent runs auto-detect the saved session and run **headless** (no visible window) for the direct-download path; capture mode always shows a window — but it is positioned off-screen so it stays visually invisible. If your session expires, pass `-v` / `--visible` to force a visible browser and sign in again.
+
+The persistent profile lives at:
+*   **Windows:** `%LOCALAPPDATA%\PuppeteerSession\`
+*   **macOS:** `~/Library/Application Support/PuppeteerSession/`
+*   **Linux:** `~/.local/share/PuppeteerSession/`
 
 ## Installation & Setup
 
+### Windows
 1.  **Clone the Repository:**
     ```bash
     git clone https://github.com/PatBQc/SharePointVideoDownloader
     cd SharePointVideoDownloader
     ```
-2.  *(Optional)* Install ffmpeg as described in Prerequisites if you want seekable webm, .mp4 output, or .mp3 audio extraction.
+2.  *(Optional)* Install ffmpeg as described in Prerequisites.
 3.  **Build the Project:**
     ```bash
     dotnet build
     ```
-    (This will restore NuGet packages, including Puppeteer Sharp.)
+
+### macOS
+1.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/PatBQc/SharePointVideoDownloader
+    cd SharePointVideoDownloader
+    ```
+2.  *(Optional)* `brew install ffmpeg`.
+3.  **Build the Project:**
+    ```bash
+    dotnet build
+    ```
+4.  **Grant permissions if needed:** On first run, macOS may block Chromium. Allow it under System Settings → Privacy & Security.
+
+### Linux
+1.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/PatBQc/SharePointVideoDownloader
+    cd SharePointVideoDownloader
+    ```
+2.  *(Optional)* Install ffmpeg via your package manager.
+3.  **Build the Project:**
+    ```bash
+    dotnet build
+    ```
 
 ## Downloading Pre-compiled Releases
 
@@ -68,7 +104,18 @@ Here's a brief explanation of the different versions available (replace `vXX.XX`
     *   "Self-contained", includes the .NET runtime.
     *   Larger file size.
 
-**Recommendation:** If you already have the .NET 9 Desktop Runtime installed, the `DotNet.zip` version is the easiest and smallest. Otherwise pick the `Self-Contained` variant for your architecture (most likely `x64-Self-Contained`).
+*   **`SharePointVideoDownloader-vXX.XX-macOS-x64-Self-Contained.zip`**:
+    *   For **Intel Macs** (x64).
+    *   `chmod +x SharePointVideoDownloader` after extraction. On first run, allow it under System Settings → Privacy & Security if macOS blocks it.
+
+*   **`SharePointVideoDownloader-vXX.XX-macOS-ARM64-Self-Contained.zip`**:
+    *   For **Apple Silicon Macs** (M1/M2/M3/M4...).
+    *   Same chmod / Privacy & Security caveat as the Intel variant.
+
+*   **`SharePointVideoDownloader-vXX.XX-linux-x64-Self-Contained.zip`**:
+    *   For **64-bit Linux**. `chmod +x SharePointVideoDownloader` after extraction.
+
+**Recommendation:** If you already have the .NET 9 Desktop Runtime installed, the `DotNet.zip` version is the easiest and smallest (works on every OS). Otherwise pick the `Self-Contained` variant for your architecture.
 
 After downloading, extract the ZIP file to a folder of your choice and run `SharePointVideoDownloader.exe`. If you want capture mode to produce a seekable file or an `.mp4` / `.mp3` instead of raw `.webm`, drop `ffmpeg.exe` into the same folder (or install it on PATH). The startup banner will tell you if ffmpeg was not found.
 
@@ -116,6 +163,7 @@ You can provide arguments to specify the URL, output filename, and whether to do
         *   **Important:** Enclose the URL in "double quotes" if it contains special characters like `&` or `=`.
     *   `-c, --capture`: (Optional) Skip the direct-download attempt and go straight to in-browser capture. Use this for view-only / DRM-protected stream pages. Capture runs in real time.
     *   `--capture-seconds <N>`: (Optional, capture mode only) Stop the recording after N seconds. Useful for testing the capture pipeline without committing to a full meeting length.
+    *   `-v, --visible`: (Optional) Force a visible browser window even if a saved Microsoft 365 session is detected. Useful when your cached login has expired and you need to re-authenticate. Capture mode is always non-headless regardless of this flag.
     *   `-a, --audio`: (Optional) Produce an MP3 instead of a video file. Requires ffmpeg to be available.
     *   `-o, --output <FILENAME>`: (Optional) Desired output filename. The container extension (`.mp4`, `.webm`, `.mp3`) is honoured when ffmpeg is available; without ffmpeg, capture mode keeps the raw `.webm`.
     *   `-h, --help, -?, /?`: Display the help message.
@@ -139,8 +187,10 @@ You can provide arguments to specify the URL, output filename, and whether to do
         ```
 
 **3. Browser Interaction:**
-*   On the first run, a Chromium window will open. **Log into Microsoft 365 manually** inside that window. The session is persisted in `%LOCALAPPDATA%\PuppeteerSession`, so subsequent runs do not need a fresh login.
-*   Capture mode positions the window off-screen (`--window-position=-2400,-2400`) so it is not visually disruptive. The DRM CDM still requires a real, non-headless rendering surface, so the window genuinely exists — just out of sight.
+*   **First run (no saved session):** the Chromium window opens visibly so you can sign in to Microsoft 365 (including any MFA). The session is persisted automatically and reused on subsequent runs.
+*   **Subsequent runs of direct download:** the saved session is detected and the browser runs **headless** (no visible window). Direct downloads happen silently.
+*   **Capture mode:** always launches non-headless because the PlayReady CDM requires a real rendering surface. The window is positioned off-screen (`--window-position=-2400,-2400`) so it is not visually disruptive.
+*   **Re-authenticating:** if your saved session expires, pass `-v` / `--visible` to force a visible window and sign in again.
 
 **4.  Monitoring:**
 The console reports progress: ffmpeg availability check, browser launch, navigation, the path being used (direct download or capture), and any post-processing (remux / transcode / mp3 extraction).
@@ -170,6 +220,10 @@ You can adjust the behavior by modifying constants at the top of `Program.cs`:
 *   **Capture: WARNING — could not confirm playback started:** The Puppeteer click on the `<video>` element did not start playback. Sometimes the SharePoint UI requires a different selector — try running once with the window on-screen (remove the `--window-position` arg in `Program.cs`) to see what is happening.
 *   **Login screen appears repeatedly:** Something is wiping `%LOCALAPPDATA%\PuppeteerSession` between runs (anti-virus cleanup, manual deletion, profile change). Ensure that directory persists.
 
+## Credits
+
+*   Smart headless detection, `-v / --visible` flag, the `_publishAll.sh` cross-platform publish script, and the macOS / Linux install instructions were originally contributed in [mmueller22/SharePointVideoDownloader](https://github.com/mmueller22/SharePointVideoDownloader) and ported here on top of the v02.00 architecture. Thanks Mike.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -177,5 +231,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## TODO
 
-- [x] Take the Sharepoint URL from the CLI (`url -o filename` style) - *Implemented with `-u/--url`, `-o/--output`, `-a/--audio`, `-c/--capture`, `--capture-seconds`.*
-- [x] Make sure that if I login once, then I am logged the next time around. - *Partially addressed by `userDataDir` option in `Program.cs` for persistent sessions.*
+- [x] Take the Sharepoint URL from the CLI (`url -o filename` style) - *Implemented with `-u/--url`, `-o/--output`, `-a/--audio`, `-c/--capture`, `--capture-seconds`, `-v/--visible`.*
+- [x] Make sure that if I login once, then I am logged the next time around. - *Persistent profile via `userDataDir`, plus auto-detect of saved session for headless mode.*
