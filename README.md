@@ -190,7 +190,9 @@ You can adjust the behavior by modifying constants at the top of `Program.cs`:
     *   Did the script successfully click "Play"? If not, check the `possibleSelectors` in the code.
     *   Microsoft might have changed the URL structure for `videomanifest`. Check the Network tab in your browser's DevTools (F12) manually to see if the URL pattern still matches `videomanifest?provider`.
 *   **Login screen appears repeatedly:** You might need to configure a persistent `UserDataDir` in the Puppeteer `LaunchOptions` within `Program.cs` to maintain the login session across runs.
-*   **`yt-dlp` errors:** Check the `[yt-dlp ERR]` messages in the console. The issue might be with `yt-dlp` itself, the processed URL, or network connectivity. Try running the `yt-dlp` command manually with the shortened URL printed by the script to isolate the problem.
+*   **`yt-dlp` errors:** Check the `[yt-dlp ERR]` messages in the console. The issue might be with `yt-dlp` itself, the processed URL, or network connectivity.
+    *   **HTTP 401 Unauthorized from `yt-dlp`:** Microsoft's media CDN (`*.svc.ms`) requires the SharePoint browser session in addition to the signed manifest URL. The application now exports the Puppeteer browser cookies to a temporary Netscape `cookies.txt` file and passes it to `yt-dlp` via `--cookies`, alongside the browser User-Agent (`--user-agent`) and the SharePoint origin as `--referer`. The cookies file is deleted automatically after the download. If you still hit 401, make sure you are actually signed in inside the Puppeteer-controlled browser window (run with `RunHeadless = false` once and complete the Microsoft login).
+    *   To reproduce a `yt-dlp` failure manually, you must mirror those flags — running `yt-dlp` with only the printed shortened URL will fail with 401 because no session is attached.
 
 ## License
 

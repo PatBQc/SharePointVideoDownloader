@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using PuppeteerSharp;
 
@@ -387,9 +388,33 @@ class Program
             Console.WriteLine($"Shortened URL: {shortenedUrl.Substring(0, Math.Min(shortenedUrl.Length, 100))}..."); // Show beginning
 
 
-            // 10. Execute yt-dlp
-            Console.WriteLine($"Starting yt-dlp to download {(audioOnly ? "audio" : "video")} as '{outputFilename}'...");
-            await RunYtDlp(shortenedUrl, outputFilename, audioOnly);
+            // 10. Export browser session so yt-dlp can authenticate to the media CDN.
+            // Microsoft's *.svc.ms CDN now requires SharePoint session cookies in addition
+            // to the signed query parameters embedded in the manifest URL — without them
+            // yt-dlp gets HTTP 401 Unauthorized. We also forward the browser User-Agent
+            // and use the SharePoint page origin as Referer for maximum compatibility.
+            string? cookiesFile = null;
+            string? userAgent = null;
+            string? referer = null;
+            try
+            {
+                Console.WriteLine("Exporting browser session (cookies + user-agent) for yt-dlp...");
+                cookiesFile = await ExportCookiesToNetscapeAsync(page, targetUrl, manifestUrl);
+                try { userAgent = await browser.GetUserAgentAsync(); } catch { /* best effort */ }
+                try { referer = new Uri(targetUrl).GetLeftPart(UriPartial.Authority); } catch { /* best effort */ }
+
+                // 11. Execute yt-dlp
+                Console.WriteLine($"Starting yt-dlp to download {(audioOnly ? "audio" : "video")} as '{outputFilename}'...");
+                await RunYtDlp(shortenedUrl, outputFilename, audioOnly, cookiesFile, userAgent, referer);
+            }
+            finally
+            {
+                // The cookies file contains live session credentials — wipe it ASAP.
+                if (!string.IsNullOrEmpty(cookiesFile) && File.Exists(cookiesFile))
+                {
+                    try { File.Delete(cookiesFile); } catch { /* ignore */ }
+                }
+            }
 
         }
         catch (Exception ex)
@@ -417,23 +442,39 @@ class Program
         }
     }
 
-    static async Task RunYtDlp(string videoUrl, string outputFilename, bool audioOnly)
+    static async Task RunYtDlp(string videoUrl, string outputFilename, bool audioOnly, string? cookiesFile = null, string? userAgent = null, string? referer = null)
     {
         string effectiveOutputFilename = outputFilename;
         string arguments;
+
+        // Build common auth/header flags. These are required because Microsoft's media
+        // CDN authenticates via the SharePoint browser session, not just the URL.
+        var prefix = new StringBuilder();
+        if (!string.IsNullOrEmpty(cookiesFile))
+        {
+            prefix.Append($"--cookies \"{cookiesFile}\" ");
+        }
+        if (!string.IsNullOrEmpty(userAgent))
+        {
+            prefix.Append($"--user-agent \"{userAgent}\" ");
+        }
+        if (!string.IsNullOrEmpty(referer))
+        {
+            prefix.Append($"--referer \"{referer}\" ");
+        }
 
         if (audioOnly)
         {
             // Ensure the filename for yt-dlp has an .mp3 extension for audio
             effectiveOutputFilename = Path.ChangeExtension(outputFilename, ".mp3");
-            arguments = $"\"{videoUrl}\" -x --extract-audio --audio-format mp3 --audio-quality 0 -o \"{effectiveOutputFilename}\"";
+            arguments = $"{prefix}\"{videoUrl}\" -x --extract-audio --audio-format mp3 --audio-quality 0 -o \"{effectiveOutputFilename}\"";
             Console.WriteLine($"Requesting audio extraction to: {effectiveOutputFilename}");
         }
         else
         {
             // Ensure filename is quoted in case it contains spaces
             // Ensure URL is quoted as it's very long and contains special characters
-            arguments = $"\"{videoUrl}\" -o \"{outputFilename}\"";
+            arguments = $"{prefix}\"{videoUrl}\" -o \"{outputFilename}\"";
         }
 
         // Add --verbose for more detailed yt-dlp output during debugging
@@ -449,7 +490,12 @@ class Program
             CreateNoWindow = true,       // Don't show the yt-dlp console window
         };
 
-        Console.WriteLine($"Executing: {processStartInfo.FileName} {processStartInfo.Arguments}");
+        // Mask the cookies file path in the echoed command — it points to a temp file
+        // that holds live session credentials.
+        string echoedArgs = string.IsNullOrEmpty(cookiesFile)
+            ? arguments
+            : arguments.Replace(cookiesFile, "<cookies-file>");
+        Console.WriteLine($"Executing: {processStartInfo.FileName} {echoedArgs}");
 
         using (var process = new Process { StartInfo = processStartInfo })
         {
@@ -501,5 +547,82 @@ class Program
                 Console.ResetColor();
             }
         }
+    }
+
+    // Export the live Puppeteer browser cookies (for the SharePoint origin AND the
+    // captured manifest origin) to a Netscape-format cookies.txt file that yt-dlp
+    // can consume via the --cookies flag. Returns the absolute path to the file.
+    static async Task<string> ExportCookiesToNetscapeAsync(IPage page, string targetUrl, string manifestUrl)
+    {
+        // Collect every URL whose cookies we need: the SharePoint page itself and the
+        // media-CDN host serving the manifest/segments.
+        var origins = new System.Collections.Generic.List<string>();
+        try { origins.Add(new Uri(targetUrl).GetLeftPart(UriPartial.Authority)); } catch { /* ignore */ }
+        try { origins.Add(new Uri(manifestUrl).GetLeftPart(UriPartial.Authority)); } catch { /* ignore */ }
+
+        CookieParam[] cookies;
+        try
+        {
+            cookies = await page.GetCookiesAsync(origins.ToArray());
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"Warning: failed to read cookies from browser: {ex.Message}");
+            Console.ResetColor();
+            cookies = Array.Empty<CookieParam>();
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# Netscape HTTP Cookie File");
+        sb.AppendLine("# Generated by SharePointVideoDownloader for yt-dlp authentication.");
+        sb.AppendLine();
+
+        int written = 0;
+        foreach (var c in cookies)
+        {
+            if (c == null || string.IsNullOrEmpty(c.Name) || string.IsNullOrEmpty(c.Domain))
+            {
+                continue;
+            }
+            string value = c.Value ?? string.Empty;
+            // Netscape cookies.txt is tab-separated. Skip cookies whose fields contain
+            // tab/newline characters since they'd corrupt the file.
+            if (c.Name.IndexOfAny(new[] { '\t', '\n', '\r' }) >= 0) continue;
+            if (value.IndexOfAny(new[] { '\t', '\n', '\r' }) >= 0) continue;
+
+            string domain = c.Domain;
+            // The Netscape format flag for "include subdomains" is TRUE iff the domain
+            // begins with a leading dot.
+            bool includeSubdomains = domain.StartsWith(".", StringComparison.Ordinal);
+
+            string path = string.IsNullOrEmpty(c.Path) ? "/" : c.Path;
+            bool secure = c.Secure == true;
+
+            // Session cookies (no expiry) are written as 0; otherwise use the unix ts.
+            long expires = 0L;
+            if (c.Expires.HasValue && c.Expires.Value > 0)
+            {
+                expires = (long)c.Expires.Value;
+            }
+
+            // yt-dlp recognises the "#HttpOnly_" prefix (Mozilla extension) to
+            // preserve the HttpOnly flag on a cookie.
+            string domainLine = (c.HttpOnly == true) ? "#HttpOnly_" + domain : domain;
+
+            sb.Append(domainLine).Append('\t')
+              .Append(includeSubdomains ? "TRUE" : "FALSE").Append('\t')
+              .Append(path).Append('\t')
+              .Append(secure ? "TRUE" : "FALSE").Append('\t')
+              .Append(expires).Append('\t')
+              .Append(c.Name).Append('\t')
+              .AppendLine(value);
+            written++;
+        }
+
+        string filePath = Path.Combine(Path.GetTempPath(), $"spvd_cookies_{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(filePath, sb.ToString());
+        Console.WriteLine($"Wrote {written} cookies to temporary file for yt-dlp.");
+        return filePath;
     }
 }
