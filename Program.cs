@@ -636,6 +636,7 @@ class Program
         public double? VideoDuration { get; set; }
         public int? VideoWidth { get; set; }
         public int? VideoHeight { get; set; }
+        public string? StopReason { get; set; }
     }
 
     // Capture the playing video via getDisplayMedia + MediaRecorder, then save the
@@ -765,7 +766,8 @@ class Program
             videoCurrentTime: v ? v.currentTime : null,
             videoDuration: v ? (isFinite(v.duration) ? v.duration : null) : null,
             videoWidth: window.__spvd.videoWidth,
-            videoHeight: window.__spvd.videoHeight
+            videoHeight: window.__spvd.videoHeight,
+            stopReason: window.__spvd.stopReason
         });
     };
     window.__spvd_stop = function() {
@@ -949,7 +951,71 @@ class Program
                 window.__spvd.state = 'error';
             };
 
-            video.addEventListener('ended', function(){ try { recorder.stop(); } catch (e) {} });
+            // Stop the recorder when the video reaches its end. We need belt and
+            // suspenders here because the SharePoint OnePlayer is MSE+PlayReady
+            // and we cannot trust any single end-of-stream signal:
+            //   1. <video>.ended event — may or may not fire on MSE+DRM streams.
+            //   2. currentTime >= duration - epsilon — the actual end-of-content
+            //      is reliable when video.duration is known and finite.
+            //   3. Stall detection — if currentTime has not advanced for ~10s and
+            //      we are within 1 s of duration, treat that as the end too.
+            //   4. Hard duration cap — if duration is known, schedule a stop at
+            //      duration + a small grace window so we never run forever.
+            //   5. maxSeconds explicit cap — already wired below.
+            // Whichever signal fires first wins; recorder.stop() is idempotent
+            // (it checks recorder.state).
+            var stopReason = null;
+            function stopRecording(reason) {
+                if (stopReason) return; // already stopping
+                stopReason = reason;
+                window.__spvd.stopReason = reason;
+                try { if (recorder.state === 'recording') recorder.stop(); } catch (e) {}
+            }
+
+            video.addEventListener('ended', function(){ stopRecording('video.ended event'); });
+
+            // Schedule a hard cap based on the known duration. We give 30 s of
+            // grace because some players seek slightly past the end during
+            // teardown, and we add an extra 5 s for buffer flush.
+            var initialDuration = (typeof video.duration === 'number' && isFinite(video.duration)) ? video.duration : 0;
+            if (initialDuration > 0) {
+                var capMs = Math.max(0, (initialDuration - video.currentTime) * 1000) + 30000;
+                setTimeout(function() { stopRecording('hard duration cap (' + initialDuration.toFixed(1) + 's + 30 s)'); }, capMs);
+            }
+
+            // Poll for end-of-stream by content position + stall.
+            var lastTime = video.currentTime;
+            var stallTicks = 0;
+            var endPollHandle = setInterval(function() {
+                if (stopReason) { clearInterval(endPollHandle); return; }
+                var dur = (typeof video.duration === 'number' && isFinite(video.duration)) ? video.duration : 0;
+                var t = video.currentTime;
+                if (dur > 0 && t >= dur - 0.5) {
+                    clearInterval(endPollHandle);
+                    stopRecording('currentTime reached duration (' + t.toFixed(2) + ' / ' + dur.toFixed(2) + ')');
+                    return;
+                }
+                if (Math.abs(t - lastTime) < 0.05) {
+                    stallTicks++;
+                    if (stallTicks >= 10) {
+                        // ~10 s of no advancement.
+                        if (dur > 0 && t >= dur - 1.5) {
+                            clearInterval(endPollHandle);
+                            stopRecording('stalled near duration (' + t.toFixed(2) + ' / ' + dur.toFixed(2) + ')');
+                        } else if (dur === 0) {
+                            // No known duration AND playback frozen. Most likely
+                            // we have hit the end of an open-ended MSE stream.
+                            clearInterval(endPollHandle);
+                            stopRecording('stalled with unknown duration at ' + t.toFixed(2) + 's');
+                        }
+                        // If we are stalled but well before the end, the user may
+                        // have paused; keep waiting.
+                    }
+                } else {
+                    stallTicks = 0;
+                    lastTime = t;
+                }
+            }, 1000);
 
             recorder.start(2000);
             window.__spvd.recorder = recorder;
@@ -957,7 +1023,7 @@ class Program
 
             if (maxSeconds > 0) {
                 setTimeout(function() {
-                    try { if (recorder.state === 'recording') recorder.stop(); } catch (e) {}
+                    stopRecording('--capture-seconds=' + maxSeconds + ' elapsed');
                 }, maxSeconds * 1000);
             }
         } catch (e) {
@@ -1088,7 +1154,7 @@ class Program
 
             if (s == "downloaded")
             {
-                Console.WriteLine($"Capture: in-page Blob assembled ({status.BlobSize:N0} bytes), waiting for the file to land on disk...");
+                Console.WriteLine($"Capture: in-page Blob assembled ({status.BlobSize:N0} bytes); stopReason='{status.StopReason ?? "?"}'. Waiting for the file to land on disk...");
                 break;
             }
         }
