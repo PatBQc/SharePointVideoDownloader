@@ -398,3 +398,20 @@ FodyWeavers.xsd
 # JetBrains Rider
 *.sln.iml
 .claude/
+
+# Local downloads / test artefacts. The capture and direct-download paths
+# can produce real meeting content under the working directory; never let
+# any of it slip into the repo. Ported from mmueller22/SharePointVideoDownloader.
+test*.mp4
+Test*.mp4
+*.mp3
+*.webm
+*.crdownload
+downloaded_*
+
+# macOS
+.DS_Store
+
+# Puppeteer / Chromium fetched at runtime
+.local-chromium/
+.local-firefox/

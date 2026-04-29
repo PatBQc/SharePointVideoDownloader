@@ -9,14 +9,44 @@ using PuppeteerSharp;
 class Program
 {
     // --- Configuration ---
-    // Set to false to see the browser window (useful for debugging/initial login).
-    // Capture mode automatically launches non-headless and pushes the window
-    // off-screen, regardless of this flag.
-    const bool RunHeadless = false;
-    // Optional: persistent Puppeteer profile so that the user only needs to log
-    // into Microsoft 365 once.
+    // Persistent Puppeteer profile so that the user only needs to log into
+    // Microsoft 365 once. The presence of a "Default/Cookies" file inside this
+    // directory is also our signal for "smart headless" detection — see
+    // ShouldRunHeadless() below.
     static string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PuppeteerSession");
     // --- End Configuration ---
+
+    // Smart headless detection (originally contributed in
+    // https://github.com/mmueller22/SharePointVideoDownloader). Returns true
+    // when the persisted Chromium profile already contains a Default/Cookies
+    // file or Default/Network folder, which is a reliable proxy for "the user
+    // has already logged into Microsoft 365 in this profile". On a fresh
+    // install we return false so the user can see the browser, sign in, and
+    // complete MFA. Capture mode overrides this and always runs non-headless
+    // because the PlayReady CDM requires a real, non-headless rendering
+    // surface — but we still push the window off-screen so it is invisible.
+    static bool ShouldRunHeadless()
+    {
+        try
+        {
+            if (Directory.Exists(userDataDir))
+            {
+                string defaultFolder = Path.Combine(userDataDir, "Default");
+                string cookiesFile = Path.Combine(defaultFolder, "Cookies");
+                string networkFolder = Path.Combine(defaultFolder, "Network");
+                if (Directory.Exists(defaultFolder) &&
+                    (File.Exists(cookiesFile) || Directory.Exists(networkFolder)))
+                {
+                    Console.WriteLine("Existing Microsoft 365 session detected — running headless.");
+                    return true;
+                }
+            }
+        }
+        catch { /* fall through to visible */ }
+
+        Console.WriteLine("No saved Microsoft 365 session found — running with visible browser so you can sign in.");
+        return false;
+    }
 
     static void ShowHelp()
     {
@@ -60,6 +90,14 @@ class Program
         Console.WriteLine("                            after N seconds even if the video has not ended.");
         Console.WriteLine("                            Useful for testing.");
         Console.WriteLine();
+        Console.WriteLine("  -v, --visible           : (Optional) Force a visible browser window even if");
+        Console.WriteLine("                            a saved session is detected. Useful when the cached");
+        Console.WriteLine("                            login has expired and you need to re-authenticate.");
+        Console.WriteLine("                            Capture mode is always non-headless regardless;");
+        Console.WriteLine("                            this flag specifically affects the direct-download");
+        Console.WriteLine("                            path which now runs headless by default when a");
+        Console.WriteLine("                            session is cached.");
+        Console.WriteLine();
         Console.WriteLine("  -h, --help, -?, /?      : Display this help message.");
         Console.WriteLine();
         Console.WriteLine("Examples:");
@@ -97,6 +135,7 @@ class Program
         bool argsValid = true;
         bool captureMode = false;
         int captureMaxSeconds = 0;
+        bool forceVisible = false;
 
         if (args.Length > 0)
         {
@@ -141,6 +180,10 @@ class Program
                     case "--capture":
                         captureMode = true;
                         break;
+                    case "-v":
+                    case "--visible":
+                        forceVisible = true;
+                        break;
                     case "--capture-seconds":
                         if (i + 1 < args.Length && int.TryParse(args[++i], out var capSecs) && capSecs > 0)
                         {
@@ -183,6 +226,8 @@ class Program
                 Console.WriteLine("Using command-line arguments:");
                 Console.WriteLine($"  URL: {targetUrl}");
                 Console.WriteLine($"  Audio Only: {audioOnly}");
+                Console.WriteLine($"  Capture Mode: {captureMode}");
+                Console.WriteLine($"  Force Visible: {forceVisible}");
                 if (!string.IsNullOrWhiteSpace(outputFilename))
                 {
                     Console.WriteLine($"  Output Filename: {outputFilename}");
@@ -305,9 +350,29 @@ class Program
                 browserArgs.Add("--window-position=-2400,-2400");
                 browserArgs.Add("--window-size=1280,720");
             }
+            // Decide whether to run headless. Capture mode always runs non-
+            // headless (DRM requires a real surface). Otherwise we use the
+            // smart-headless heuristic — but the user can force visible with
+            // --visible, e.g. to redo a sign-in after the cached session
+            // expires.
+            bool runHeadless;
+            if (captureMode)
+            {
+                runHeadless = false;
+            }
+            else if (forceVisible)
+            {
+                Console.WriteLine("--visible: forcing visible browser regardless of saved session.");
+                runHeadless = false;
+            }
+            else
+            {
+                runHeadless = ShouldRunHeadless();
+            }
+
             var launchOptions = new LaunchOptions
             {
-                Headless = captureMode ? false : RunHeadless, // Capture path needs a real surface for DRM
+                Headless = runHeadless,
                 Args = browserArgs.ToArray(),
                 UserDataDir = userDataDir,
                 DefaultViewport = null, // let the OS window size drive the viewport in capture mode
@@ -1341,18 +1406,30 @@ class Program
 
     static string LocateFfmpeg()
     {
-        // Prefer a sibling ffmpeg.exe next to our own .exe; fall back to PATH.
+        // Cross-platform candidate names: Windows uses ffmpeg.exe, Unix-like
+        // systems use ffmpeg (no extension). We probe both on every host so
+        // the lookup also works when running a Linux-style ffmpeg binary on
+        // Windows (e.g., a Cygwin / WSL build dropped next to the exe).
+        string[] candidates = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows)
+            ? new[] { "ffmpeg.exe", "ffmpeg" }
+            : new[] { "ffmpeg", "ffmpeg.exe" };
+
+        // Prefer a sibling ffmpeg next to our own .exe.
         try
         {
             string? selfDir = Path.GetDirectoryName(Environment.ProcessPath ?? "");
             if (!string.IsNullOrEmpty(selfDir))
             {
-                string candidate = Path.Combine(selfDir, "ffmpeg.exe");
-                if (File.Exists(candidate)) return candidate;
+                foreach (var name in candidates)
+                {
+                    string candidate = Path.Combine(selfDir, name);
+                    if (File.Exists(candidate)) return candidate;
+                }
             }
         }
         catch { }
 
+        // Fall back to PATH.
         try
         {
             string? pathEnv = Environment.GetEnvironmentVariable("PATH");
@@ -1361,14 +1438,26 @@ class Program
                 foreach (var dir in pathEnv.Split(Path.PathSeparator))
                 {
                     if (string.IsNullOrEmpty(dir)) continue;
-                    string p = Path.Combine(dir, "ffmpeg.exe");
-                    if (File.Exists(p)) return p;
-                    string p2 = Path.Combine(dir, "ffmpeg");
-                    if (File.Exists(p2)) return p2;
+                    foreach (var name in candidates)
+                    {
+                        string p = Path.Combine(dir, name);
+                        if (File.Exists(p)) return p;
+                    }
                 }
             }
         }
         catch { }
+
+        // Last resort on macOS: Homebrew installs ffmpeg in /opt/homebrew/bin
+        // (Apple Silicon) or /usr/local/bin (Intel) which are sometimes not on
+        // the PATH inherited by GUI-launched apps.
+        if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX))
+        {
+            foreach (var hard in new[] { "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg" })
+            {
+                if (File.Exists(hard)) return hard;
+            }
+        }
 
         return string.Empty;
     }

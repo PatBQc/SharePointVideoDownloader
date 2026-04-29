@@ -42,7 +42,8 @@ Authentication is delegated to the browser session — the app never types passw
 | `SharePointVideoDownloader.sln` | Visual Studio solution. |
 | `Dependencies/` | Folder copied verbatim into `*-DotNet-Dependencies` release ZIPs. Currently empty (used to hold a bundled `yt-dlp.exe`; we now rely on user-installed ffmpeg via PATH). |
 | `Releases/` | Pre-built ZIPs published on GitHub Releases (DotNet, x64/x86/ARM64 self-contained). |
-| `_publishAll.bat` | Builds and zips every release flavour. Hard-codes the version string. |
+| `_publishAll.bat` | Windows build/zip. Hard-codes the version string. |
+| `_publishAll.sh` | macOS / Linux build/zip. Same release flavours plus `osx-x64`, `osx-arm64`, `linux-x64`. |
 | `README.md` | End-user documentation. |
 | `LICENSE` | MIT. |
 
@@ -52,15 +53,16 @@ There is intentionally no `src/`, no test project, no service abstractions — a
 
 Anchor points if you need to edit:
 
-- **CLI parsing**: `Main` walks `args` manually with a `switch` on `-u/--url`, `-a/--audio`, `-o/--output`, `-c/--capture`, `--capture-seconds`, `-h/--help`. Falls back to interactive prompts when arguments are absent or invalid. See `ShowHelp()` for the canonical surface.
+- **CLI parsing**: `Main` walks `args` manually with a `switch` on `-u/--url`, `-a/--audio`, `-o/--output`, `-c/--capture`, `--capture-seconds`, `-v/--visible`, `-h/--help`. Falls back to interactive prompts when arguments are absent or invalid. See `ShowHelp()` for the canonical surface.
 - **ffmpeg startup check**: `WarnIfFfmpegMissing` (called from `Main` after argument parsing) prints a yellow heads-up if ffmpeg is not on PATH and not next to the exe. The program continues regardless; users get a webm without seek index, and `-a` becomes a no-op.
 - **Output filename normalisation**: warns when the extension does not match the chosen mode (e.g., requested mp4 with `--audio`).
-- **Browser launch**: `Puppeteer.LaunchAsync` with `Headless = RunHeadless` (default `false`), `--no-sandbox`, and `UserDataDir = userDataDir` for session persistence. Capture mode appends `--use-fake-ui-for-media-stream`, `--auto-accept-this-tab-capture`, `--auto-select-tab-capture-source-by-title=spvd-capture`, and `--window-position=-2400,-2400`. `BrowserFetcher.DownloadAsync()` ensures Chromium is present on first run.
+- **Smart headless** (`ShouldRunHeadless()`): if `userDataDir/Default/Cookies` or `userDataDir/Default/Network` exists, the user has already logged in once and we run headless. Otherwise visible. `-v / --visible` overrides to force visible. **Capture mode always runs non-headless** (DRM CDM requires a real surface) but the window is pushed off-screen so it stays invisible.
+- **Browser launch**: `Puppeteer.LaunchAsync` with `Headless = runHeadless` (computed per above), `--no-sandbox`, and `UserDataDir = userDataDir` for session persistence. Capture mode appends `--use-fake-ui-for-media-stream`, `--auto-accept-this-tab-capture`, `--auto-select-tab-capture-source-by-title=spvd-capture`, and `--window-position=-2400,-2400`. `BrowserFetcher.DownloadAsync()` ensures Chromium is present on first run.
 - **`TryDirectDownloadAsync`**: see "Default" strategy above. Starts the file via injected `<a download>`, polls for `.crdownload` to detect progress and final file presence. If `-a` was set, calls `ExtractAudioMp3Async` after the video lands.
 - **`TryCaptureViaPlaybackAsync`**: see "--capture" strategy above. State machine in JS exposes `window.__spvd_status()` (returns JSON snapshot), polled by C# every 2 s. Includes diagnostic fields (`audioPathway`, `videoSource`, `canvasProbeNonZero`, dim, recorder state, video paused flag and currentTime).
 - **`PostProcessCaptureAsync`**: ffmpeg remux (`-c copy`) → seekable webm; conditional H.264/AAC transcode if `-o foo.mp4` was requested. Soft-fails (warns and keeps raw webm) if ffmpeg is missing or returns non-zero.
 - **`ExtractAudioMp3Async`**: `-vn libmp3lame -q:a 2` from any video file the previous step produced; deletes source on success.
-- **`LocateFfmpeg` / `RunFfmpegAsync`**: shared helpers used by all post-processing. `LocateFfmpeg` checks `Environment.ProcessPath`'s directory first, then PATH.
+- **`LocateFfmpeg` / `RunFfmpegAsync`**: shared helpers used by all post-processing. `LocateFfmpeg` is OS-aware (probes both `ffmpeg.exe` and `ffmpeg`) and checks `Environment.ProcessPath`'s directory first, then PATH, then macOS Homebrew defaults (`/opt/homebrew/bin`, `/usr/local/bin`).
 
 ## Build, run, publish
 
@@ -87,7 +89,7 @@ Publish all release artefacts via `_publishAll.bat` from the repo root (Windows 
 - **Dependencies**: stay minimal. Currently only `PuppeteerSharp`. Adding a NuGet package needs a real reason — call it out explicitly in the PR/commit body.
 - **No telemetry, no network calls beyond what the browser already does.** Privacy of the user's SharePoint sessions matters.
 - **STRICTLY FORBIDDEN: do not commit access keys, secrets, tokens, or any private / personally identifiable information to git.** This includes (non-exhaustive): API keys, OAuth client secrets, Bearer / SPOPacToken / refresh tokens, session cookies (FedAuth, rtFa, EdgeAccessCookie), connection strings, private URLs, real tenant or user identifiers (email addresses, UPNs, employee IDs), real SharePoint / OneDrive paths, real meeting recording filenames, captured request/response payloads from a live session, screenshots showing any of the above. Test data in commits and docs must be obviously fictional (`https://your-sharepoint.com/...`, `user@example.com`). If you ever generate a `cookies.txt`, log file, sample HAR, or test artefact, **delete it before staging** — never `git add` it. If you suspect a secret has already been committed, stop and tell the user immediately so it can be rotated and rewritten out of history.
-- **Cross-platform caveat**: the tool is effectively Windows-first (`_publishAll.bat`, `%LOCALAPPDATA%`, `ffmpeg.exe` lookup). Don't break the Windows path; if you make it work on Linux/macOS too, that's a bonus.
+- **Cross-platform**: code paths assume Windows + Unix work (the smart-headless detection, `LocateFfmpeg`, OS-aware Homebrew probe, `_publishAll.sh`). The `userDataDir` resolves correctly on all three OSes via `Environment.SpecialFolder.LocalApplicationData`. Do not break the Windows path when adding macOS/Linux affordances.
 - **Targeting Microsoft Stream / SharePoint UI**: this is the brittle layer. The two literals you most likely need to touch are `stream.aspx`'s `id=` query parameter (consumed by `TryDirectDownloadAsync`) and the `<video>` selector / SharePoint click handler used by `TryCaptureViaPlaybackAsync`.
 
 ## Things that commonly break (and where to look)
@@ -102,7 +104,7 @@ Publish all release artefacts via `_publishAll.bat` from the repo root (Windows 
 
 ## When making changes
 
-- Keep the CLI surface stable: `-u/--url`, `-a/--audio`, `-o/--output`, `-c/--capture`, `--capture-seconds`, `-h/--help`. Renaming or removing flags is a breaking change for users running scripts.
+- Keep the CLI surface stable: `-u/--url`, `-a/--audio`, `-o/--output`, `-c/--capture`, `--capture-seconds`, `-v/--visible`, `-h/--help`. Renaming or removing flags is a breaking change for users running scripts.
 - If you touch direct download, capture, or ffmpeg logic, update the troubleshooting section of `README.md` so the public docs match reality.
 - After non-trivial changes, do a manual end-to-end smoke test against a real SharePoint URL with the operator's persisted session. Verify both `directOk=true` (downloaded mp4 plays) and `--capture` (raw webm exists, ffmpeg-remuxed webm seeks, mp4 transcode plays). There is no automated test suite.
 - Always delete real-content test artefacts before staging — they fall under the secrets rule.
