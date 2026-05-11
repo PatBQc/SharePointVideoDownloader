@@ -15,6 +15,8 @@ It drives a Chromium instance via Puppeteer Sharp and tries two strategies:
 *   Persistent Chromium profile: log into Microsoft 365 once, the session is reused.
 *   Browser-side capture stays silent (no audio in your speakers) and invisible (window kept off-screen).
 *   Optional ffmpeg post-processing: webm → seekable webm, transcode to .mp4, audio-only mp3.
+*   Support for a custom browser executable and a custom ffmpeg executable via CLI flags.
+*   Live console progress for ffmpeg transcoding and capture workflows.
 *   Single-file C# console app, no service, no telemetry.
 
 ## Prerequisites
@@ -166,6 +168,8 @@ You can provide arguments to specify the URL, output filename, and whether to do
     *   `-v, --visible`: (Optional) Force a visible browser window even if a saved Microsoft 365 session is detected. Useful when your cached login has expired and you need to re-authenticate. Capture mode is always non-headless regardless of this flag.
     *   `-a, --audio`: (Optional) Produce an MP3 instead of a video file. Requires ffmpeg to be available.
     *   `-o, --output <FILENAME>`: (Optional) Desired output filename. The container extension (`.mp4`, `.webm`, `.mp3`) is honoured when ffmpeg is available; without ffmpeg, capture mode keeps the raw `.webm`.
+    *   `--browser-path <PATH>`: (Optional) Path to an already-installed Chromium-based browser (Chrome, Edge, etc.) executable. Use this when you want the app to launch your local browser instead of downloading the bundled Chromium.
+    *   `--ffmpeg-path <PATH>`: (Optional) Path to a specific `ffmpeg` executable. Use this when ffmpeg is not on PATH or you want to force a particular installation like a portable ffmpeg executable.
     *   `-h, --help, -?, /?`: Display the help message.
 
 *   **Examples:**
@@ -184,6 +188,11 @@ You can provide arguments to specify the URL, output filename, and whether to do
     *   Test the capture pipeline against your own URL with a 30-second cap:
         ```bash
         .\SharePointVideoDownloader.exe -u "..." -o "test.mp4" --capture --capture-seconds 30
+        ```
+        Download a sharepoint meeting (fast, returns the original mp4) via already installed Microsoft Edge browser and ffmpeg portable (Works ONLY with dotnet):
+        ```bash
+        dotnet run -- --browser-path "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" -v -u "https://your-tenant-my.sharepoint.com/.../stream.aspx?id=..." --capture -o "meeting.mp4" --ffmpeg-path "PATH-TO-YOUR-ffmpeg.exe"
+
         ```
 
 **3. Browser Interaction:**

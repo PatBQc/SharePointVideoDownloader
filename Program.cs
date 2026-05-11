@@ -98,6 +98,15 @@ class Program
         Console.WriteLine("                            path which now runs headless by default when a");
         Console.WriteLine("                            session is cached.");
         Console.WriteLine();
+        Console.WriteLine("  --browser-path <PATH>   : (Optional) Path to an existing browser executable");
+        Console.WriteLine("                            (e.g., Edge, Chrome, Chromium). If provided, this");
+        Console.WriteLine("                            browser will be used instead of downloading Chromium.");
+        Console.WriteLine("                            Example: --browser-path \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\"");
+        Console.WriteLine();
+        Console.WriteLine("  --ffmpeg-path <PATH>    : (Optional) Path to ffmpeg executable. Use this if");
+        Console.WriteLine("                            you have a portable ffmpeg version or it's not in PATH.");
+        Console.WriteLine("                            Example: --ffmpeg-path \"C:\\ffmpeg\\bin\\ffmpeg.exe\"");
+        Console.WriteLine();
         Console.WriteLine("  -h, --help, -?, /?      : Display this help message.");
         Console.WriteLine();
         Console.WriteLine("Examples:");
@@ -128,14 +137,16 @@ class Program
         Console.WriteLine("------------------------------------------------------------------------");
         Console.WriteLine();
 
-        string targetUrl = null;
+        string? targetUrl = null;
         bool audioOnly = false;
-        string outputFilename = null;
+        string? outputFilename = null;
         bool useArgs = false;
         bool argsValid = true;
         bool captureMode = false;
         int captureMaxSeconds = 0;
         bool forceVisible = false;
+        string? browserPath = null;
+        string? ffmpegPath = null;
 
         if (args.Length > 0)
         {
@@ -197,6 +208,32 @@ class Program
                             argsValid = false;
                         }
                         break;
+                    case "--browser-path":
+                        if (i + 1 < args.Length)
+                        {
+                            browserPath = args[++i];
+                        }
+                        else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Error: Missing value for --browser-path argument.");
+                            Console.ResetColor();
+                            argsValid = false;
+                        }
+                        break;
+                    case "--ffmpeg-path":
+                        if (i + 1 < args.Length)
+                        {
+                            ffmpegPath = args[++i];
+                        }
+                        else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Error: Missing value for --ffmpeg-path argument.");
+                            Console.ResetColor();
+                            argsValid = false;
+                        }
+                        break;
                     default:
                         Console.ForegroundColor = ConsoleColor.Red;
                         Console.WriteLine($"Error: Unknown argument '{args[i]}'");
@@ -231,19 +268,20 @@ class Program
                 if (!string.IsNullOrWhiteSpace(outputFilename))
                 {
                     Console.WriteLine($"  Output Filename: {outputFilename}");
-                }
+                }                
             }
         }
 
         if (!useArgs || !argsValid) // If no args, or args were invalid, prompt user
         {
+            
             // 1. Get Target URL from User
             Console.Write("Enter the SharePoint/Stream video page URL: ");
             targetUrl = Console.ReadLine();
             
             // 2. Get Download Type
             Console.Write("Download video or audio only? (Enter V for Video, A for Audio - default V): ");
-            string downloadTypeInput = Console.ReadLine()?.Trim().ToUpperInvariant();
+            string? downloadTypeInput = Console.ReadLine()?.Trim().ToUpperInvariant();
             if (downloadTypeInput == "A")
             {
                 audioOnly = true;
@@ -253,6 +291,7 @@ class Program
             // 3. Get Desired Output Filename
             Console.Write($"Enter the desired output filename (e.g., my_{(audioOnly ? "audio" : "video")}.{(audioOnly ? "mp3" : "mp4")}): ");
             outputFilename = Console.ReadLine();
+
         }
 
         // Validate URL (whether from args or input)
@@ -315,10 +354,10 @@ class Program
         // before the long-running browser work even starts. ffmpeg is a soft
         // dependency: when present we get seekable webm + .mp4 transcode +
         // audio extraction. When absent we leave the raw .webm in place.
-        WarnIfFfmpegMissing(audioOnly, outputFilename);
+        WarnIfFfmpegMissing(ffmpegPath ?? string.Empty, audioOnly, outputFilename ?? string.Empty);
 
-        IBrowser browser = null;
-        IPage page = null;
+        IBrowser? browser = null;
+        IPage? page = null;
 
         try
         {
@@ -376,13 +415,27 @@ class Program
                 Args = browserArgs.ToArray(),
                 UserDataDir = userDataDir,
                 DefaultViewport = null, // let the OS window size drive the viewport in capture mode
-                // ExecutablePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe" // Example: Use existing Chrome
+                ExecutablePath = string.IsNullOrWhiteSpace(browserPath) ? null : browserPath
             };
 
             // Download browser if needed
-            var browserFetcher = new BrowserFetcher();
-            Console.WriteLine("Ensuring browser is available...");
-            await browserFetcher.DownloadAsync();
+            if (string.IsNullOrWhiteSpace(browserPath))
+            {
+                var browserFetcher = new BrowserFetcher();
+                Console.WriteLine("Ensuring browser is available...");
+                await browserFetcher.DownloadAsync();
+            }
+            else
+            {
+                Console.WriteLine($"Using browser from: {browserPath}");
+                if (!File.Exists(browserPath))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Error: Browser executable not found at {browserPath}");
+                    Console.ResetColor();
+                    return;
+                }
+            }
 
             browser = await Puppeteer.LaunchAsync(launchOptions);
             page = await browser.NewPageAsync();
@@ -398,7 +451,8 @@ class Program
             Console.WriteLine($"Navigating to: {targetUrl}");
             try
             {
-                await page.GoToAsync(targetUrl, WaitUntilNavigation.Networkidle2); // Increased timeout, wait for network to be relatively idle
+                await page.EvaluateFunctionAsync("url => { window.location.href = url; }", targetUrl);
+                await page.WaitForNavigationAsync(new NavigationOptions { WaitUntil = new[] { WaitUntilNavigation.Networkidle2 } });
             }
             catch (TimeoutException)
             {
@@ -421,7 +475,7 @@ class Program
             // when the user has streaming-only access to a DRM-protected recording.
             if (captureMode)
             {
-                bool capOk = await TryCaptureViaPlaybackAsync(page, outputFilename, captureMaxSeconds);
+                bool capOk = await TryCaptureViaPlaybackAsync(page, outputFilename, captureMaxSeconds, ffmpegPath);
                 if (!capOk)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -434,12 +488,19 @@ class Program
                 // transcoded it, webm otherwise) into mp3.
                 if (audioOnly)
                 {
-                    string captured = File.Exists(outputFilename)
-                        ? outputFilename
-                        : Path.Combine(
-                            Path.GetDirectoryName(Path.GetFullPath(outputFilename)) ?? Directory.GetCurrentDirectory(),
-                            Path.GetFileNameWithoutExtension(outputFilename) + ".webm");
-                    await ExtractAudioMp3Async(captured);
+                    string? captured = null;
+                    if (!string.IsNullOrEmpty(outputFilename))
+                    {
+                        captured = File.Exists(outputFilename)
+                            ? outputFilename
+                            : Path.Combine(
+                                Path.GetDirectoryName(Path.GetFullPath(outputFilename)) ?? Directory.GetCurrentDirectory(),
+                                Path.GetFileNameWithoutExtension(outputFilename) + ".webm");
+                    }
+                    if (!string.IsNullOrEmpty(captured))
+                    {
+                        await ExtractAudioMp3Async(captured, ffmpegPath);
+                    }
                 }
                 return;
             }
@@ -463,10 +524,7 @@ class Program
             if (directOk)
             {
                 // Honor -a/--audio: extract audio from the downloaded mp4.
-                if (audioOnly)
-                {
-                    await ExtractAudioMp3Async(outputFilename);
-                }
+                    if (audioOnly && !string.IsNullOrWhiteSpace(outputFilename))
                 return;
             }
 
@@ -547,9 +605,11 @@ class Program
     // file URL from the stream.aspx?id=<path> query parameter. Returns true if
     // the file was saved successfully, false if we should fall back to the
     // legacy manifest/yt-dlp flow.
-    static async Task<bool> TryDirectDownloadAsync(IPage page, string pageUrl, string outputFilename)
+    static async Task<bool> TryDirectDownloadAsync(IPage page, string? pageUrl, string? outputFilename)
     {
         Uri pageUri;
+        if (string.IsNullOrEmpty(pageUrl) || string.IsNullOrEmpty(outputFilename)) return false;
+
         try { pageUri = new Uri(pageUrl); }
         catch { return false; }
 
@@ -573,7 +633,8 @@ class Program
         Console.WriteLine($"Direct download URL: {downloadUrl}");
 
         // Configure where Chromium should save downloads, and what filename to use.
-        string downloadDir = Path.GetDirectoryName(Path.GetFullPath(outputFilename)) ?? Directory.GetCurrentDirectory();
+        string resolvedOutput = outputFilename;
+        string downloadDir = Path.GetDirectoryName(Path.GetFullPath(resolvedOutput)) ?? Directory.GetCurrentDirectory();
         if (string.IsNullOrEmpty(downloadDir)) downloadDir = Directory.GetCurrentDirectory();
         string targetFileName = Path.GetFileName(outputFilename);
         string finalPath = Path.Combine(downloadDir, targetFileName);
@@ -712,15 +773,16 @@ class Program
     // the open question — verified by running this — is whether the captured audio
     // track still contains real samples or whether --mute-audio also silences the
     // capture pipeline. Diagnostic output reports both conditions.
-    static async Task<bool> TryCaptureViaPlaybackAsync(IPage page, string outputFilename, int maxSeconds)
+    static async Task<bool> TryCaptureViaPlaybackAsync(IPage page, string? outputFilename, int maxSeconds, string? ffmpegPath = null)
     {
         // Force a .webm extension on the output: MediaRecorder produces VP9 + Opus
         // in a WebM container. Transcoding to mp4 would require ffmpeg, which is a
         // separate concern — we punt on it here.
-        string webmName = Path.GetFileNameWithoutExtension(outputFilename);
+        string webmName = string.IsNullOrEmpty(outputFilename) ? "capture" : Path.GetFileNameWithoutExtension(outputFilename);
         if (string.IsNullOrEmpty(webmName)) webmName = "capture";
         webmName += ".webm";
-        string downloadDir = Path.GetDirectoryName(Path.GetFullPath(outputFilename)) ?? Directory.GetCurrentDirectory();
+        string fullPath = string.IsNullOrEmpty(outputFilename) ? Path.Combine(Directory.GetCurrentDirectory(), webmName) : Path.GetFullPath(outputFilename);
+        string downloadDir = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
         if (string.IsNullOrEmpty(downloadDir)) downloadDir = Directory.GetCurrentDirectory();
         string finalPath = Path.Combine(downloadDir, webmName);
         string crdownloadPath = finalPath + ".crdownload";
@@ -1246,7 +1308,7 @@ class Program
                 //  2. The user originally asked for a .mp4 (we forced .webm only
                 //     because MediaRecorder cannot output mp4 in Chromium). If
                 //     ffmpeg is available we transcode to mp4 too.
-                await PostProcessCaptureAsync(finalPath, outputFilename);
+                await PostProcessCaptureAsync(finalPath, outputFilename, ffmpegPath);
 
                 return true;
             }
@@ -1262,9 +1324,9 @@ class Program
     // Cues element so seeking works, and — if the user originally requested an
     // mp4 — transcode to H.264 + AAC. Both steps are best-effort; if ffmpeg is
     // missing or fails we leave the raw webm alone and tell the user where it is.
-    static async Task PostProcessCaptureAsync(string rawWebmPath, string requestedOutput)
+    static async Task PostProcessCaptureAsync(string rawWebmPath, string? requestedOutput, string? customFfmpegPath = null)
     {
-        string ffmpeg = LocateFfmpeg();
+        string ffmpeg = LocateFfmpeg(customFfmpegPath);
         if (string.IsNullOrEmpty(ffmpeg))
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
@@ -1279,7 +1341,7 @@ class Program
         string remuxed = rawWebmPath + ".seekable.webm";
         try { if (File.Exists(remuxed)) File.Delete(remuxed); } catch { }
         Console.WriteLine("Remuxing webm to add seek index...");
-        bool remuxOk = await RunFfmpegAsync(ffmpeg, $"-y -i \"{rawWebmPath}\" -c copy \"{remuxed}\"");
+        bool remuxOk = await RunFfmpegAsyncWithErrorCapture(ffmpeg, $"-y -i \"{rawWebmPath}\" -c copy \"{remuxed}\"");
         if (remuxOk && File.Exists(remuxed) && new FileInfo(remuxed).Length > 0)
         {
             try
@@ -1302,14 +1364,14 @@ class Program
         }
 
         // Step 2: if the user asked for .mp4 (or any non-.webm extension), produce that too.
-        string requestedExt = Path.GetExtension(requestedOutput);
+        string requestedExt = Path.GetExtension(requestedOutput ?? string.Empty);
         if (!string.IsNullOrEmpty(requestedExt) && !requestedExt.Equals(".webm", StringComparison.OrdinalIgnoreCase))
         {
             string outDir = Path.GetDirectoryName(Path.GetFullPath(rawWebmPath)) ?? Directory.GetCurrentDirectory();
             string mp4Path = Path.Combine(outDir, Path.GetFileNameWithoutExtension(rawWebmPath) + requestedExt);
             try { if (File.Exists(mp4Path)) File.Delete(mp4Path); } catch { }
             Console.WriteLine($"Transcoding to {requestedExt} (this re-encodes; takes a while)...");
-            bool tx = await RunFfmpegAsync(ffmpeg, $"-y -i \"{rawWebmPath}\" -c:v libx264 -preset veryfast -crf 22 -c:a aac -b:a 160k -movflags +faststart \"{mp4Path}\"");
+            bool tx = await RunFfmpegAsyncWithErrorCapture(ffmpeg, $"-y -i \"{rawWebmPath}\" -c:v libx264 -preset veryfast -crf 22 -c:a aac -b:a 160k -movflags +faststart \"{mp4Path}\"", showProgress: true);
             if (tx && File.Exists(mp4Path) && new FileInfo(mp4Path).Length > 0)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
@@ -1328,9 +1390,9 @@ class Program
     // before any browser work, so the user has a chance to install ffmpeg and
     // re-run rather than discover the problem after a one-hour capture has
     // already produced an unseekable webm.
-    static void WarnIfFfmpegMissing(bool audioOnlyRequested, string requestedOutput)
+    static void WarnIfFfmpegMissing(string customFfmpegPath, bool audioOnlyRequested, string? requestedOutput)
     {
-        if (!string.IsNullOrEmpty(LocateFfmpeg())) return;
+        if (!string.IsNullOrEmpty(LocateFfmpeg(customFfmpegPath))) return;
 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("[!] ffmpeg was not found in PATH or alongside this executable.");
@@ -1366,7 +1428,7 @@ class Program
     // Extract an mp3 from any video / webm produced by the download or capture
     // path, then delete the original. No-op (with a warning) if ffmpeg is
     // missing — the user keeps the source file in that case.
-    static async Task ExtractAudioMp3Async(string sourcePath)
+    static async Task ExtractAudioMp3Async(string sourcePath, string? customFfmpegPath = null)
     {
         if (string.IsNullOrEmpty(sourcePath) || !File.Exists(sourcePath))
         {
@@ -1374,7 +1436,7 @@ class Program
             return;
         }
 
-        string ffmpeg = LocateFfmpeg();
+        string ffmpeg = LocateFfmpeg(customFfmpegPath);
         if (string.IsNullOrEmpty(ffmpeg))
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
@@ -1387,7 +1449,7 @@ class Program
         string mp3Path = Path.ChangeExtension(sourcePath, ".mp3");
         try { if (File.Exists(mp3Path)) File.Delete(mp3Path); } catch { }
         Console.WriteLine($"Extracting audio to {mp3Path}...");
-        bool ok = await RunFfmpegAsync(ffmpeg, $"-y -i \"{sourcePath}\" -vn -c:a libmp3lame -q:a 2 \"{mp3Path}\"");
+        bool ok = await RunFfmpegAsyncWithErrorCapture(ffmpeg, $"-y -i \"{sourcePath}\" -vn -c:a libmp3lame -q:a 2 \"{mp3Path}\"");
         if (ok && File.Exists(mp3Path) && new FileInfo(mp3Path).Length > 0)
         {
             try { File.Delete(sourcePath); } catch { /* leave source if delete fails */ }
@@ -1404,8 +1466,24 @@ class Program
         }
     }
 
-    static string LocateFfmpeg()
+    static string LocateFfmpeg(string? customPath = null)
     {
+        // If a custom path was provided, validate and use it
+        if (!string.IsNullOrEmpty(customPath))
+        {
+            if (File.Exists(customPath))
+            {
+                return customPath;
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Warning: Custom ffmpeg path '{customPath}' does not exist.");
+                Console.ResetColor();
+                // Fall through to auto-detection
+            }
+        }
+
         // Cross-platform candidate names: Windows uses ffmpeg.exe, Unix-like
         // systems use ffmpeg (no extension). We probe both on every host so
         // the lookup also works when running a Linux-style ffmpeg binary on
@@ -1462,7 +1540,7 @@ class Program
         return string.Empty;
     }
 
-    static async Task<bool> RunFfmpegAsync(string ffmpeg, string args)
+    static async Task<bool> RunFfmpegAsync(string ffmpeg, string args, bool showProgress = false)
     {
         var psi = new ProcessStartInfo
         {
@@ -1477,12 +1555,271 @@ class Program
         {
             using var p = new Process { StartInfo = psi };
             p.Start();
-            // Drain both streams so ffmpeg does not block on a full pipe.
-            var _o = p.StandardOutput.ReadToEndAsync();
-            var _e = p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            await _o; await _e;
+
+            // If we need to show progress, read both streams and update a single console line
+            if (showProgress)
+            {
+                var progressData = new Dictionary<string, string>();
+                object sync = new object();
+
+                void UpdateProgress()
+                {
+                    var parts = new List<string>();
+                    if (progressData.TryGetValue("time", out var time)) parts.Add($"time={time}");
+                    if (progressData.TryGetValue("bitrate", out var bitrate)) parts.Add($"bitrate={bitrate}");
+                    if (progressData.TryGetValue("dup", out var dup)) parts.Add($"dup={dup}");
+                    if (progressData.TryGetValue("drop", out var drop)) parts.Add($"drop={drop}");
+                    if (progressData.TryGetValue("speed", out var speed)) parts.Add($"speed={speed}");
+
+                    if (parts.Count > 0)
+                    {
+                        string output = $"  [ffmpeg] {string.Join(" ", parts)}";
+                        lock (sync)
+                        {
+                            Console.Write($"\r{output.PadRight(80)}");
+                            Console.Out.Flush();
+                        }
+                    }
+                }
+
+                async Task ReadStreamAsync(TextReader reader)
+                {
+                    var buffer = new char[1024];
+                    var builder = new StringBuilder();
+                    while (true)
+                    {
+                        int read = await reader.ReadAsync(buffer, 0, buffer.Length);
+                        if (read <= 0) break;
+
+                        for (int i = 0; i < read; i++)
+                        {
+                            char ch = buffer[i];
+                            if (ch == '\r' || ch == '\n')
+                            {
+                                if (builder.Length > 0)
+                                {
+                                    var line = builder.ToString().Trim();
+                                    builder.Clear();
+                                    if (line.Contains('='))
+                                    {
+                                        var kv = line.Split('=', 2);
+                                        if (kv.Length == 2)
+                                        {
+                                            string key = kv[0].Trim();
+                                            string value = kv[1].Trim();
+                                            if (key == "time" || key == "bitrate" || key == "dup" || key == "drop" || key == "speed")
+                                            {
+                                                progressData[key] = value;
+                                                UpdateProgress();
+                                            }
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            builder.Append(ch);
+                        }
+                    }
+
+                    if (builder.Length > 0)
+                    {
+                        var line = builder.ToString().Trim();
+                        if (line.Contains('='))
+                        {
+                            var kv = line.Split('=', 2);
+                            if (kv.Length == 2)
+                            {
+                                string key = kv[0].Trim();
+                                string value = kv[1].Trim();
+                                if (key == "time" || key == "bitrate" || key == "dup" || key == "drop" || key == "speed")
+                                {
+                                    progressData[key] = value;
+                                    UpdateProgress();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                var stderrTask = ReadStreamAsync(p.StandardError);
+                var stdoutTask = ReadStreamAsync(p.StandardOutput);
+                await Task.WhenAll(stderrTask, stdoutTask, p.WaitForExitAsync());
+                Console.WriteLine();
+            }
+            else
+            {
+                // Original behavior: silently drain both streams
+                var _o = p.StandardOutput.ReadToEndAsync();
+                var _e = p.StandardError.ReadToEndAsync();
+                await p.WaitForExitAsync();
+                await _o; await _e;
+            }
+
             return p.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ffmpeg invocation failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    static async Task<bool> RunFfmpegAsyncWithErrorCapture(string ffmpeg, string args, bool showProgress = false)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        try
+        {
+            using var p = new Process { StartInfo = psi };
+            p.Start();
+
+            string stderrOutput = "";
+            string stdoutOutput = "";
+
+            // If we need to show progress, read both streams and update a single console line
+            if (showProgress)
+            {
+                var progressData = new Dictionary<string, string>();
+                object sync = new object();
+
+                void UpdateProgress()
+                {
+                    var parts = new List<string>();
+                    if (progressData.TryGetValue("time", out var time)) parts.Add($"time={time}");
+                    if (progressData.TryGetValue("bitrate", out var bitrate)) parts.Add($"bitrate={bitrate}");
+                    if (progressData.TryGetValue("dup", out var dup)) parts.Add($"dup={dup}");
+                    if (progressData.TryGetValue("drop", out var drop)) parts.Add($"drop={drop}");
+                    if (progressData.TryGetValue("speed", out var speed)) parts.Add($"speed={speed}");
+
+                    if (parts.Count > 0)
+                    {
+                        string output = $"  [ffmpeg] {string.Join(" ", parts)}";
+                        lock (sync)
+                        {
+                            Console.Write($"\r{output.PadRight(80)}");
+                            Console.Out.Flush();
+                        }
+                    }
+                }
+
+                async Task ReadStreamAsync(TextReader reader, StringBuilder outputBuilder)
+                {
+                    var buffer = new char[1024];
+                    var builder = new StringBuilder();
+                    while (true)
+                    {
+                        int read = await reader.ReadAsync(buffer, 0, buffer.Length);
+                        if (read <= 0) break;
+
+                        for (int i = 0; i < read; i++)
+                        {
+                            char ch = buffer[i];
+                            outputBuilder.Append(ch);
+                            if (ch == '\r' || ch == '\n')
+                            {
+                                if (builder.Length > 0)
+                                {
+                                    var line = builder.ToString().Trim();
+                                    builder.Clear();
+                                    // Parse progress line: "frame= 123 fps=25 q=28.0 size=256kB time=00:00:05.00 bitrate=400.0kbits/s dup=0 drop=0 speed=1.00x"
+                                    if (line.Contains('='))
+                                    {
+                                        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                                        foreach (var part in parts)
+                                        {
+                                            if (part.Contains('='))
+                                            {
+                                                var kv = part.Split('=', 2);
+                                                if (kv.Length == 2)
+                                                {
+                                                    string key = kv[0].Trim();
+                                                    string value = kv[1].Trim();
+                                                    if (key == "time" || key == "bitrate" || key == "dup" || key == "drop" || key == "speed")
+                                                    {
+                                                        progressData[key] = value;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        UpdateProgress();
+                                    }
+                                }
+                                continue;
+                            }
+                            builder.Append(ch);
+                        }
+                    }
+
+                    if (builder.Length > 0)
+                    {
+                        var line = builder.ToString().Trim();
+                        outputBuilder.Append(line);
+                        if (line.Contains('='))
+                        {
+                            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var part in parts)
+                            {
+                                if (part.Contains('='))
+                                {
+                                    var kv = part.Split('=', 2);
+                                    if (kv.Length == 2)
+                                    {
+                                        string key = kv[0].Trim();
+                                        string value = kv[1].Trim();
+                                        if (key == "time" || key == "bitrate" || key == "dup" || key == "drop" || key == "speed")
+                                        {
+                                            progressData[key] = value;
+                                        }
+                                    }
+                                }
+                            }
+                            UpdateProgress();
+                        }
+                    }
+                }
+
+                var stderrBuilder = new StringBuilder();
+                var stdoutBuilder = new StringBuilder();
+                var stderrTask = ReadStreamAsync(p.StandardError, stderrBuilder);
+                var stdoutTask = ReadStreamAsync(p.StandardOutput, stdoutBuilder);
+                await Task.WhenAll(stderrTask, stdoutTask, p.WaitForExitAsync());
+                Console.WriteLine();
+                stderrOutput = stderrBuilder.ToString();
+                stdoutOutput = stdoutBuilder.ToString();
+            }
+            else
+            {
+                // Original behavior: silently drain both streams
+                var _o = p.StandardOutput.ReadToEndAsync();
+                var _e = p.StandardError.ReadToEndAsync();
+                await p.WaitForExitAsync();
+                await _o; await _e;
+            }
+
+            if (p.ExitCode != 0)
+            {
+                Console.WriteLine($"ffmpeg failed with exit code {p.ExitCode}");
+                if (!string.IsNullOrEmpty(stderrOutput))
+                {
+                    Console.WriteLine("ffmpeg stderr:");
+                    Console.WriteLine(stderrOutput);
+                }
+                if (!string.IsNullOrEmpty(stdoutOutput))
+                {
+                    Console.WriteLine("ffmpeg stdout:");
+                    Console.WriteLine(stdoutOutput);
+                }
+                return false;
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
