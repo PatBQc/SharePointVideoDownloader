@@ -231,7 +231,10 @@ You can adjust the behavior by modifying constants at the top of `Program.cs`:
 
 ## Credits
 
+Thanks to everyone who took interest and time in this small project!  PR are accepted.
+
 *   Smart headless detection, `-v / --visible` flag, the `_publishAll.sh` cross-platform publish script, and the macOS / Linux install instructions were originally contributed in [mmueller22/SharePointVideoDownloader](https://github.com/mmueller22/SharePointVideoDownloader) and ported here on top of the v02.00 architecture. Thanks Mike.
+*   Ability to target the specific Chromium derived browser (Chrome, Edge, Brave, ...) through a CLI parameter in order to abey to organization policy.  Same thing with specifying FFMPEG file location.  Contributions by [majid3612/SharePointVideoDownloader/tree/feature/already-installed-browser-support](https://github.com/majid3612/SharePointVideoDownloader/tree/feature/already-installed-browser-support)
 
 ## License
 
